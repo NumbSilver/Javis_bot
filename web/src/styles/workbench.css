@@ -1,0 +1,362 @@
+.workbench-task-table .ant-table-cell {
+  overflow: hidden;
+}
+
+.workbench-task-table .ant-table-tbody > tr > td {
+  padding-block: 16px;
+  vertical-align: middle;
+}
+
+.workbench-task-main {
+  min-width: 0;
+}
+
+.workbench-task-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.workbench-task-title {
+  overflow: hidden;
+  color: var(--color-text);
+  font-size: 15px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workbench-task-title-row .ant-tag {
+  flex: 0 0 auto;
+  margin-inline-end: 0;
+}
+
+.workbench-task-conclusion {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  margin-top: 6px;
+}
+
+.workbench-task-conclusion > span {
+  flex: 0 0 auto;
+  color: var(--color-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.workbench-task-conclusion > .ant-typography {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workbench-task-origin {
+  display: block;
+  margin-top: 5px;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workbench-task-updated {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.task-detail-header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.task-context-modal .ant-modal-body {
+  max-height: calc(100dvh - 180px);
+  overflow-y: auto;
+}
+
+.task-decision-card {
+  padding: 20px;
+  border: 1px solid color-mix(in srgb, var(--color-warning) 35%, var(--color-border));
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-elevated);
+}
+
+.task-decision-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.task-decision-heading-actions-only {
+  justify-content: flex-end;
+}
+
+.task-decision-heading .task-section-kicker {
+  margin-bottom: 0;
+}
+
+.task-decision-heading-copy {
+  min-width: 0;
+}
+
+.task-decision-heading-copy > .ant-typography {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+}
+
+.task-decision-plan {
+  margin-top: 18px;
+}
+
+.task-decision-progress {
+  margin-top: 14px;
+  padding: 12px 14px;
+  background: var(--color-primary-bg);
+  border-radius: var(--radius-md);
+}
+
+.task-decision-progress > .task-readable-text.ant-typography {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.task-decision-section-title {
+  margin-bottom: 6px;
+  color: var(--color-text);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.task-decision-plan-intro.ant-typography {
+  display: block;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.task-decision-card code {
+  padding: 1px 5px;
+  color: #4b5563;
+  background: var(--color-bg-soft);
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  overflow-wrap: anywhere;
+}
+
+.task-plan-details,
+.task-decision-evidence {
+  margin-top: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-soft);
+}
+
+.task-plan-details > summary,
+.task-decision-evidence > summary {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  list-style: none;
+  color: var(--color-text);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.task-plan-details > summary::-webkit-details-marker,
+.task-decision-evidence > summary::-webkit-details-marker {
+  display: none;
+}
+
+.task-plan-details > summary::after,
+.task-decision-evidence > summary::after {
+  content: '展开';
+  margin-left: auto;
+  color: var(--color-text-tertiary);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.task-plan-details[open] > summary::after,
+.task-decision-evidence[open] > summary::after {
+  content: '收起';
+}
+
+.task-plan-details > summary .ant-tag {
+  margin: 0;
+}
+
+.task-plan-details ol {
+  margin: 0;
+  padding: 0 12px 12px;
+  list-style: none;
+}
+
+.task-plan-details li {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 10px;
+  padding: 10px 4px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 1.65;
+  border-top: 1px solid var(--color-border);
+}
+
+.task-plan-details li > span {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  color: var(--color-primary);
+  background: var(--color-primary-bg);
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.task-decision-scope {
+  margin-top: 14px;
+  border-top: 1px solid var(--color-border);
+}
+
+.task-decision-scope > div {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr);
+  gap: 14px;
+  padding: 11px 2px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.task-decision-scope .ant-typography {
+  margin: 0;
+  line-height: 1.6;
+}
+
+.task-decision-scope > div > .ant-typography:first-child {
+  font-size: 12px;
+}
+
+.task-decision-evidence {
+  margin-top: 14px;
+  background: var(--color-bg-elevated);
+}
+
+.task-decision-evidence-heading {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  color: var(--color-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.task-decision-evidence-heading .ant-typography {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.task-decision-evidence > summary .ant-typography {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.task-decision-evidence > summary::after {
+  margin-left: 0;
+}
+
+.task-decision-evidence-body {
+  padding: 0 12px 12px;
+  border-top: 1px solid var(--color-border);
+}
+
+.task-decision-evidence-body > .task-readable-text.ant-typography {
+  margin: 12px 2px 14px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 1.75;
+}
+
+.task-process-panel {
+  min-height: 360px;
+}
+
+.task-process-back {
+  margin-bottom: 12px;
+}
+
+.task-detail-main-grid.task-detail-main-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.task-detail-main-single .task-primary-card {
+  padding: 22px;
+}
+
+.task-secondary-meta {
+  margin-top: 10px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.task-secondary-meta .task-meta-card {
+  position: static;
+}
+
+@media (max-width: 900px) {
+  .workbench-task-table col:nth-child(2),
+  .workbench-task-table th:nth-child(2),
+  .workbench-task-table td:nth-child(2) {
+    display: none;
+  }
+
+}
+
+@media (max-width: 680px) {
+  .workbench-task-table col:nth-child(3),
+  .workbench-task-table th:nth-child(3),
+  .workbench-task-table td:nth-child(3) {
+    display: none;
+  }
+
+  .task-decision-card {
+    padding: 16px;
+  }
+
+  .task-decision-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .task-detail-header-actions .ant-btn:first-child {
+    padding-inline: 8px;
+  }
+
+  .task-decision-scope > div {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+}

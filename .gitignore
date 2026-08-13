@@ -1,0 +1,42 @@
+# 编译产物
+/jarvis-server
+/bin/
+/build/
+/dist/
+*.exe
+*.test
+*.out
+
+# Go
+vendor/
+.venv/
+__pycache__/
+*.pyc
+/web/node_modules/
+/web/dist/
+/web/*.tsbuildinfo
+/.worktrees/
+
+# 本地运行时数据
+/data/
+/var/
+/runs/
+/tmp/
+/minutes/
+/lark-im-resources/
+
+# agent 在仓库根产生的临时工作目录
+/.tmp/
+/.tmp-*/
+/.codex-tmp/
+*.log
+.qdrant-initialized
+.jarvis-task-*
+lark-auth-*.png
+tmp-*.png
+/conf/config.runtime.yaml
+
+# 操作系统 / IDE
+.DS_Store
+.idea/
+.vscode/

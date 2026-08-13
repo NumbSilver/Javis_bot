@@ -1,0 +1,189 @@
+# Jarvis 本地基线配置（本地可信环境，明文存储密钥）。
+# 主要配置段均已投入运行并在启动时校验；同目录 config.runtime.yaml 会覆盖本文件，保存后需重启生效。
+
+server:
+  addr: "0.0.0.0:18800"
+  web_root: "web/dist"
+  log_files:                              # 调试面板尾读并归并的运行日志；stderr 里有各 cron 运行结果，必须一起读
+    - "var/log/jarvis-server.log"
+    - "var/log/jarvis-server.error.log"
+
+# SQLite：单机业务真源。服务只开一个连接，所有写入在进程内串行执行。
+sqlite:
+  path: "var/jarvis.db"
+
+# M3 备用 model_api 模型名与超时。Ark endpoint、API Key、Todo embedding
+# 模型和维度按本机部署约定固定在 internal/ark，避免配置层出现第二真源。
+# 默认 M3 引擎是下面 extract.engine=codex；M2 不调用模型。
+model:
+  model: "doubao-seed-2-0-lite-260215"
+  is_reasoning_model: false
+  timeout_sec: 60
+
+# 持续世界建模：Agent 增量阅读 message / todo / task 原料，自主决定是否以及如何
+# 维护 Jarvis 内部的人、项目、群、资料、关系与历史 Fact。Go 只负责调度、游标、
+# 幂等和持久化边界。跑在关键路径之外，一轮失败不影响采集和执行。
+factengine:
+  enabled: true
+  schedule: "@every 15m"
+  rollup_schedule: "0 2 * * *"   # 每天本地 02:00 压缩前一自然日的明细事实
+  bin: "traex"
+  model: "DeepSeek-V4-Pro"
+  rollup_model: "DeepSeek-V4-Pro"
+  sandbox: "danger-full-access"   # 本地可信环境；抽取时可自跑 jarvis-tools 查已有事实避免重复
+  timeout_sec: 1200              # 一次完整世界维护 Agent 会话最多 20 分钟
+  batch_limit: 50                # 每个来源参与粗粒度缩批的候选行上限
+  max_material_chars: 100000     # 一次 Agent 会话的粗粒度材料预算；只在完整材料之间缩批
+  window_gap_minutes: 30         # 超过此间隔视为另一段对话
+  window_max_messages: 40        # 单个对话窗口的消息上限
+
+# M3 Todo 提取。enabled=true 时任一必填依赖为空都会启动失败，不静默跳过。
+extract:
+  enabled: true
+  principal_open_id: ""                 # 首次运行前由 install-jarvis 写入本机 runtime overlay
+  schedule: "@every 10m"
+  # 提取引擎：codex（默认，agent 可自跑 lark-cli/bytedcli/git/jarvis-tools 推算项目/仓库）
+  #           model_api（备用 kimi function-calling 循环）
+  engine: "codex"
+  codex_sandbox: "danger-full-access"   # 本地可信环境，codex 可读写整机、联网
+  codex_network: true                   # 开联网跑 lark-cli/bytedcli 查飞书侧信息
+  codex_reasoning_effort: "medium"      # M3 准入判断使用中等推理档位
+  concurrency: 2                        # 不同 chat_id（单聊/群聊）并发，同一 chat 串行
+  batch_messages: 400
+  context_messages: 20
+  context_window_minutes: 120
+  open_todo_limit: 20
+  fact_limit: 15                 # 每主体今天的明细事实上限（排除 rollup；另加前一天 1 条 rollup）
+  key_person_limit: 5            # 推送 person 主体事实时，关键人并集上限
+  recent_task_limit: 10          # 推送最近有进展的任务条数上限
+  max_prompt_chars: 60000
+  semantic_collection: "todo_semantic_volcengine"
+  semantic_threshold: 0.85
+  semantic_neighbor_limit: 3
+  qdrant_host: "127.0.0.1"
+  qdrant_grpc_port: 6334
+  # M3 function-calling 工具循环
+  tool_timeout_sec: 10        # 单次工具调用超时（秒）
+  history_tool_limit: 20      # query_chat_history 单次最多返回消息数
+  evidence_retry_max: 2       # source_quote 非逐字命中时，最多额外重抽次数（0=不重试）
+
+# lark-cli 子进程封装（总纲 §4）
+lark_cli:
+  bin: "lark-cli"                         # 走 PATH 查找，与 traex 同一风格
+  profile: ""                              # 初始化后写入 conf/config.runtime.yaml；为空时使用 CLI 默认 profile
+  rate_limit: 5
+  burst: 10
+  concurrent: 2
+  timeout_sec: 60
+
+# M2 消息采集：首次发现从当前时刻起步，不回溯历史。
+# related 群不再按 tier 分档调度，统一 scan_schedule 采集；hot/warm_age_hours 仅用于展示 tier 标签。
+capture:
+  page_size: 50
+  scan_workers: 2
+  hot_age_hours: 6
+  warm_age_hours: 168
+  timezone: "Asia/Shanghai"
+  discover_schedule: "@every 6h"
+  scan_schedule: "@every 2m"
+  # discover 时按 active_time 自动纳入监听的内部真人私聊上限：只开最活跃的前 N 个，
+  # 服务号私聊(p2p_target_type=bot)与僵尸老私聊不开。0=不自动开任何私聊。
+  auto_related_p2p_top_n: 30
+
+# 飞书卡片内审批回调。CC Connect 持有当前 Jarvis Bot 的唯一长连接，
+# 把审批按钮点击经带共享密钥的 localhost HTTP 转发给 Jarvis。
+card_approval:
+  enabled: false
+  profile: ""
+  principal_open_id: ""
+  relay_secret: ""  # 只写进 Git 忽略的 config.runtime.yaml
+
+# 底层 agent CLI：仅供 extract(M3) 使用。
+# 与 execute/chat 独立——真正跑 Task 与右侧对话用 execute.bin/model。
+codex:
+  bin: "traex"
+  model: "DeepSeek-V4-Flash"
+  timeout_seconds: 600   # M3 可自跑只读工具补足准入证据；达到准入结论后立即停止
+
+# 主动巡视 Agent：启动 2 分钟后先跑一次，之后每小时读取世界模型、复盘未完成工作。
+# factengine 以持续建模为主；巡视可顺手维护明确变化，外部动作仍创建 Task 交给强 M5。
+proactive:
+  enabled: true
+  schedule: "@every 1h"
+  startup_delay_seconds: 120
+  bin: "traex"
+  model: "DeepSeek-V4-Pro"
+  sandbox: "danger-full-access"
+  reasoning_effort: "medium"
+  timeout_seconds: 900
+
+# 会议巡扫：便宜的定时线索采集器。每 10 分钟同时回看最近结束的会议、向前看
+# 24 小时内待参加的日程，分别投递会后和会前 clue，落库后自动唤醒 M3。
+# 它只采集不分析：不拉妙记、不做会前准备、不写总结——那些是 M3/M5 的事。
+meeting_sweep:
+  enabled: true
+  schedule: "@every 10m"
+  startup_delay_seconds: 150
+  bin: "traex"
+  model: "DeepSeek-V4-Flash"
+  sandbox: "danger-full-access"
+  reasoning_effort: "low"
+  timeout_seconds: 600
+
+# 晨间作战简报：工作日开工前一次。Skill 自带取证/取舍/投递判断；Go 只做调度与
+# 产物新鲜度检查。默认只读，唯一预授权副作用是给 Principal 本人发一条飞书私聊。
+# 手动触发：go run ./cmd/jarvis-server -config conf/config.yaml -morning-brief-once
+morning_brief:
+  enabled: true              # 工作日 08:30 自动生成并投递；错过时间的当天启动时补跑一次
+  schedule: "30 8 * * 1-5"   # 周一至周五 08:30（Asia/Shanghai）
+  startup_delay_seconds: 180
+  bin: "traex"
+  model: "gpt-5.6-sol"       # 与 execute 同级；一天一次，取舍质量优先
+  sandbox: "danger-full-access"
+  reasoning_effort: "medium"
+  timeout_seconds: 600
+
+# M5 任务执行：独立于上面的 codex 段。这里用更强模型真正落地。
+# 手动执行始终可用（POST /api/tasks/:id/execute）；enabled 仅控制自动 cron。
+execute:
+  enabled: true                                    # 全自动：extracted Todo 固化成 Task 后立即执行；下方 schedule 只补偿遗漏（含对外动作 + push/MR）
+  schedule: "@every 5m"
+  batch_limit: 5
+  concurrency: 1                                    # 单次 sweep 内只执行一个 Task，避免多个 Codex/编译任务叠加占满 CPU
+  repo_root: ".."                                  # code_change 的 repo_ref 基目录（相对仓库根，加载时展开成绝对路径）
+  runs_dir: "runs"                                 # diff/产物落盘
+  bin: "traex"                                     # 与 M3 使用同一个 CLI，但模型/超时独立（右侧对话与日报也复用本 bin）
+  model: "gpt-5.6-sol"                             # Latest frontier（无裸 gpt-5.6；luna/terra/sol 里 sol 最强）
+  reasoning_effort: "medium"                       # 覆盖用户全局 xhigh，执行质量与耗时折中
+  timeout_second: 1800                             # 单次执行超时：30 分钟（长任务需要查资料并调用外部工具）
+  stale_executing_minute: 45                       # executing 超过此时长仍未结束 → 标 failed（防重启僵尸；须 > timeout）
+
+# 右侧流式对话（SSE /api/chat）。enabled=false 时不注册路由。
+# CLI 与模型与 M5 执行对齐（execute.bin/model）；本地可信环境固定 danger-full-access + 联网。
+chat:
+  enabled: true
+  model: "gpt-5.6-sol"                 # 与 execute.model 一致
+  timeout_seconds: 600                 # 单轮对话超时（可能自跑工具，放宽）
+  sandbox: "danger-full-access"        # 对话场景最大权限
+  reasoning_effort: "medium"           # 与 execute.reasoning_effort 一致
+
+# Agent Skills：正文位于仓库文件，启用状态和阶段范围位于 conf/skills.yaml。
+skills:
+  root: ".agents/skills"
+
+# 周期定时任务：每分钟扫描到期记录，创建 Task 并交给 M5 执行。
+scheduled_task:
+  enabled: true
+  schedule: "@every 1m"
+  batch_limit: 20
+
+# 每日进度总结（Progress 页）。enabled=false 时不起 19:00 cron（手动生成接口仍可用）。
+# 个人与群总结都用 execute 段官方 codex（danger-full-access + 联网）自跑
+# lark-cli/bytedcli/git，并分别加载对应 Skill。
+dailydigest:
+  enabled: true
+  schedule: "0 19 * * *"     # 每晚 19:00 生成当天（截至生成时刻）
+  timeout_seconds: 1200      # 正常目标 3–5 分钟；20 分钟只作为失控兜底
+  git_author: ""             # 首次运行前由 install-jarvis 写入本机 runtime overlay
+  group_message_limit: 200   # 每个关键群每天喂进 prompt 的消息上限
+  group_concurrency: 2       # 一轮批量里群总结的并发上限（>=1）

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.bytedance.jarvis.qdrant</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__JARVIS_ROOT__/bin/qdrant</string>
+    <string>--config-path</string>
+    <string>__JARVIS_ROOT__/conf/qdrant.yaml</string>
+    <string>--disable-telemetry</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__JARVIS_ROOT__/var/qdrant</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>__JARVIS_ROOT__/var/log/jarvis-qdrant.log</string>
+  <key>StandardErrorPath</key>
+  <string>__JARVIS_ROOT__/var/log/jarvis-qdrant.error.log</string>
+</dict>
+</plist>

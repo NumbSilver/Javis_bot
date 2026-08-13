@@ -1,0 +1,12 @@
+log_level: INFO
+
+# 路径相对 launchd 里的 WorkingDirectory（var/qdrant）解析。
+storage:
+  storage_path: ./storage
+  snapshots_path: ./snapshots
+
+service:
+  host: 127.0.0.1
+  http_port: 6333
+  grpc_port: 6334
+  enable_cors: false

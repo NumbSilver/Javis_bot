@@ -1,0 +1,2012 @@
+#!/usr/bin/env bash
+# jarvis-tools: canonical Jarvis query/controlled-write CLI for agents.
+# All data access goes through jarvis-server HTTP API (curl + jq).
+#
+# Output contract: data commands → compact JSON on stdout only; help → text on
+# stdout; errors → stderr + exit 1.
+set -euo pipefail
+
+fail() {
+  echo "jarvis-tools error: $*" >&2
+  exit 1
+}
+
+command -v curl >/dev/null 2>&1 || fail "curl is required but not found in PATH"
+command -v jq >/dev/null 2>&1 || fail "jq is required but not found in PATH"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+print_usage() {
+  cat <<'EOF'
+usage: jarvis-tools <subcommand> [flags]
+
+principles:
+  Simple first. Each command serves one concrete intent; there is no generic API
+  passthrough, compatibility layer or fallback for imagined future needs.
+  Progressive loading. Start with list/query summaries, then get one matched
+  object. Large prompts, run outputs and captured resource text are opt-in.
+
+subcommands:
+  list-projects          List projects
+  get-project            Get one project's full background
+  create-project         Create a project from a JSON payload
+  update-project         Replace a project's editable background
+  archive-project        Archive a project
+  list-key-matters       List open key matters
+  get-key-matter         Get one key matter's full background
+  create-key-matter      Create a key matter from a JSON payload
+  update-key-matter      Replace a key matter's editable background
+  touch-key-matter       Mark an open key matter as freshly active
+  close-key-matter       Close a key matter
+  list-groups            Search Feishu groups
+  get-group              Get one Feishu group by chat_id
+  get-context            Assemble current principal/project/chat work context
+  update-group           Replace one group's curated background
+  get-principal          Get the assistant owner's profile
+  update-principal       Replace the assistant owner's profile
+  list-persons           List important people, optionally by role
+  get-person             Get one person by Feishu open_id
+  create-person          Create a person from a JSON payload
+  update-person          Replace a person's editable background
+  delete-person          Delete a person
+  query-resources        Query managed resource summaries
+  get-resource           Get one managed resource
+  create-resource        Create a managed resource
+  update-resource        Replace a managed resource
+  touch-resource         Mark an enabled managed resource as freshly active
+  delete-resource        Delete a managed resource
+  query-messages         Query locally captured Feishu messages
+  query-captured-resources List captured attachment/document summaries
+  get-captured-resource  Load one captured resource including extracted text
+  get-shared-memory      Read shared memory
+  list-skills            List locally managed Skills
+  get-skill              Read one locally managed Skill
+  append-shared-memory   Append one entry to shared memory
+  append-clue            Hand M2 one observed fact as evidence for M3
+  append-fact            Record one fact about a project, group, person or other subject
+  list-facts             Read a subject's recorded facts, optionally for one day
+  list-relations         Read relation facts for one entity
+  create-relation        Create a natural-language relation fact
+  update-relation        Replace a relation fact's editable content
+  delete-relation        Delete a relation fact
+  list-todos             List action clues, optionally for one day
+  get-todo               Get one clue with the details omitted from summaries
+  list-tasks             List tasks, optionally for one day
+  get-task               Get one task with bounded execution history
+  create-task            Create a normal Task for strong M5 (proactive agent only)
+  start-task             Start one pending Task with strong M5 (proactive agent only)
+  update-task            Update one non-terminal Task (proactive agent only)
+  close-task             Close one verified resolved Task (proactive agent only)
+  list-scheduled-tasks   List time-triggered tasks
+  get-scheduled-task     Get one time-triggered task
+  create-scheduled-task  Create a time trigger for a new task
+  update-scheduled-task  Update a standalone time trigger
+  trigger-scheduled-task Trigger a standalone time trigger now
+  set-todo-status        Park a clue, or hand it back for execution
+  yield-until            Pause the current task until a future time
+  delete-scheduled-task  Delete a standalone time trigger
+
+Run "jarvis-tools <subcommand> --help" for command-specific flags.
+EOF
+}
+
+usage_error() {
+  print_usage >&2
+  exit 1
+}
+
+print_subcommand_help() {
+  case "$1" in
+    list-projects) cat <<'EOF'
+usage: jarvis-tools list-projects [--keyword TEXT] [--limit N] [--config PATH]
+List compact project summaries. Use get-project for full project background.
+EOF
+      ;;
+    get-project) cat <<'EOF'
+usage: jarvis-tools get-project (--id ID | --code CODE) [--config PATH]
+Get one project's full background. Use list-facts and list-relations to drill
+into history and relationships only when needed.
+EOF
+      ;;
+    create-project) payload_help "create-project" "Create one project." ;;
+    update-project) payload_id_help "update-project" "Replace one project's complete editable payload." ;;
+    archive-project) delete_id_help "archive-project" "Archive one project; this does not hard-delete it." ;;
+    list-key-matters) cat <<'EOF'
+usage: jarvis-tools list-key-matters [--keyword TEXT] [--limit N] [--config PATH]
+List compact open key matters. Use get-key-matter for full background.
+EOF
+      ;;
+    get-key-matter) cat <<'EOF'
+usage: jarvis-tools get-key-matter --id ID [--config PATH]
+Get one key matter's full background. Use list-facts and list-relations to drill
+into history and relationships only when needed.
+EOF
+      ;;
+    create-key-matter) payload_help "create-key-matter" "Create one key matter." ;;
+    update-key-matter) payload_id_help "update-key-matter" "Replace one key matter's complete editable payload." ;;
+    touch-key-matter) delete_id_help "touch-key-matter" "Mark one open key matter as freshly active without changing its content." ;;
+    close-key-matter) delete_id_help "close-key-matter" "Close one key matter; this does not hard-delete it." ;;
+    list-groups) cat <<'EOF'
+usage: jarvis-tools list-groups [--keyword TEXT] [--limit N] [--config PATH]
+Search compact Feishu group summaries. Use get-group for full background.
+EOF
+      ;;
+    get-group) cat <<'EOF'
+usage: jarvis-tools get-group --chat-id CHAT_ID [--config PATH]
+Get the Jarvis group binding and background for an exact Feishu chat_id.
+EOF
+      ;;
+    get-context) cat <<'EOF'
+usage: jarvis-tools get-context [--chat-id CHAT_ID] [--project-id ID] [--config PATH]
+Assemble the canonical current context. An explicit project wins; otherwise a
+chat resolves through its Jarvis group binding. With neither flag, returns the
+principal-level global context.
+EOF
+      ;;
+    update-group) payload_id_help "update-group" "Replace one group's curated background fields only." ;;
+    get-principal) cat <<'EOF'
+usage: jarvis-tools get-principal [--config PATH]
+Get the profile of the person Jarvis assists.
+EOF
+      ;;
+    update-principal) payload_help "update-principal" "Replace the principal profile." ;;
+    list-persons) cat <<'EOF'
+usage: jarvis-tools list-persons [--role leader|key|colleague|other]
+                                 [--keyword TEXT] [--limit N] [--config PATH]
+List compact person summaries. Use get-person for full details.
+EOF
+      ;;
+    get-person) cat <<'EOF'
+usage: jarvis-tools get-person --open-id OPEN_ID [--config PATH]
+Get one person by exact Feishu open_id. Use list-relations for relationships.
+EOF
+      ;;
+    create-person) payload_help "create-person" "Create one person." ;;
+    update-person) payload_id_help "update-person" "Replace one person's complete editable payload." ;;
+    delete-person) delete_id_help "delete-person" "Delete one person." ;;
+    query-resources) cat <<'EOF'
+usage: jarvis-tools query-resources [--project-id ID] [--person-open-id OPEN_ID] [--principal-only] [--keyword TEXT] [--limit N] [--config PATH]
+Query active managed resources such as project repos, documents, links and notes.
+EOF
+      ;;
+    get-resource) cat <<'EOF'
+usage: jarvis-tools get-resource --id ID [--config PATH]
+Get one managed resource in full.
+EOF
+      ;;
+    create-resource) payload_help "create-resource" "Create one managed resource." ;;
+    update-resource) payload_id_help "update-resource" "Replace one managed resource's editable payload." ;;
+    touch-resource) delete_id_help "touch-resource" "Mark one enabled managed resource as freshly active without changing its content." ;;
+    delete-resource) delete_id_help "delete-resource" "Delete one managed resource." ;;
+    query-messages) cat <<'EOF'
+usage: jarvis-tools query-messages [--chat-id CHAT_ID] [--sender-open-id OPEN_ID]
+                                   [--keyword TEXT] [--date YYYY-MM-DD]
+                                   [--limit N] [--config PATH]
+Query locally captured messages, newest first. At least one narrowing filter is
+recommended. Content is returned because it is the evidence being queried;
+--limit defaults to 20 and must not exceed 100.
+EOF
+      ;;
+    query-captured-resources) cat <<'EOF'
+usage: jarvis-tools query-captured-resources [--chat-id CHAT_ID]
+                                             [--message-id MESSAGE_ID]
+                                             [--resource-type TYPE]
+                                             [--keyword TEXT] [--limit N]
+                                             [--config PATH]
+List captured attachment/document summaries without local_path or extracted_text.
+Use get-captured-resource after selecting one item.
+EOF
+      ;;
+    get-captured-resource) cat <<'EOF'
+usage: jarvis-tools get-captured-resource --id ID [--config PATH]
+Load one captured resource in full, including local_path and extracted_text.
+EOF
+      ;;
+    get-shared-memory) cat <<'EOF'
+usage: jarvis-tools get-shared-memory [--config PATH]
+Read the complete shared memory Markdown.
+EOF
+      ;;
+    list-skills) cat <<'EOF'
+usage: jarvis-tools list-skills [--keyword TEXT] [--config PATH]
+List enabled and disabled Skill summaries. Use get-skill for full content.
+EOF
+      ;;
+    get-skill) cat <<'EOF'
+usage: jarvis-tools get-skill --name NAME [--config PATH]
+Read the complete content of one locally managed Skill.
+EOF
+      ;;
+    append-shared-memory) cat <<'EOF'
+usage: jarvis-tools append-shared-memory [--note TEXT|-] [--config PATH]
+Atomically append one non-empty entry. Use --note - or omit it to read stdin.
+EOF
+      ;;
+    append-fact) cat <<'EOF'
+usage: jarvis-tools append-fact --subject-type TYPE --subject-id ID
+                              [--description TEXT|-] [--occurred-at RFC3339]
+                              [--source KIND] [--source-id ID] [--config PATH]
+
+Record one thing that happened, bound to whatever it is about. Facts are read
+back as a subject's recent history and as the evidence behind the daily digests,
+so write one when you learn something worth remembering tomorrow — a decision,
+a delivery, a blocker, a change of direction. Do not write one for every command
+you run.
+
+  --subject-type  what the fact is about: project, group, person or task are the
+                  types read back today. If the fact genuinely belongs to
+                  something else, write that instead of forcing a fit — the type
+                  is not a fixed list.
+  --subject-id    the numeric id of that subject.
+  --description   the fact itself, in prose, complete enough to make sense weeks
+                  later. Use --description - or omit it to read stdin.
+  --occurred-at   when it happened (defaults to now). Pass it explicitly when
+                  recording something you learned after the event.
+  --source        what produced this fact; defaults to the running Task.
+  --source-id     optional numeric id for an explicit --source. An explicit
+                  source never inherits JARVIS_TASK_ID.
+
+example:
+  jarvis-tools append-fact --subject-type project --subject-id 3 --description - <<'TXT'
+  事实表方案定稿：复用并泛化 project_event，不新建表。按天总结沿用 daily_digest。
+  TXT
+EOF
+      ;;
+    list-facts) cat <<'EOF'
+usage: jarvis-tools list-facts --subject-type TYPE --subject-id ID
+                             [--date YYYY-MM-DD] [--limit N] [--config PATH]
+
+Read a subject's facts, newest first. Use it before deciding something to see
+what already happened, instead of assuming. --date narrows to one natural day in
+local time; --limit defaults to 20 and must not exceed 100.
+
+example:
+  jarvis-tools list-facts --subject-type group --subject-id 12 --date 2026-08-02
+EOF
+      ;;
+    list-relations) cat <<'EOF'
+usage: jarvis-tools list-relations --entity-type TYPE --entity-id ID
+                                   [--limit N] [--config PATH]
+List relation facts involving one entity. --limit defaults to 20.
+EOF
+      ;;
+    create-relation) payload_help "create-relation" "Create one natural-language relation fact." ;;
+    update-relation) payload_id_help "update-relation" "Replace one relation fact's description and validity bounds." ;;
+    delete-relation) delete_id_help "delete-relation" "Delete one relation fact." ;;
+    list-todos) cat <<'EOF'
+usage: jarvis-tools list-todos [--date YYYY-MM-DD] [--status S] [--limit N] [--config PATH]
+
+List compact action-clue summaries newest-evidence first. --date narrows by
+last_evidence_at to one local natural day. --limit defaults to 20. Use get-todo
+for description, context, source evidence, resolution and the frozen snapshot.
+
+example:
+  jarvis-tools list-todos --date 2026-08-02 --status extracted
+EOF
+      ;;
+    get-todo) cat <<'EOF'
+usage: jarvis-tools get-todo --id ID [--config PATH]
+
+Get one clue including description, context, open_questions and resolution —
+the fields omitted from the summary list in prompts.
+EOF
+      ;;
+    list-tasks) cat <<'EOF'
+usage: jarvis-tools list-tasks [--date YYYY-MM-DD] [--status S] [--limit N] [--config PATH]
+
+List compact task summaries. --date narrows by COALESCE(last_progress_at,
+created_at) to one local natural day. --limit defaults to 20. Without --status,
+all task statuses are queried. Use get-task for details and recent history.
+
+example:
+  jarvis-tools list-tasks --date 2026-08-02 --status done,executing
+EOF
+      ;;
+    get-task) cat <<'EOF'
+usage: jarvis-tools get-task --id ID [--run-limit N] [--event-limit N]
+                             [--include-run-output] [--include-prompt]
+                             [--config PATH]
+
+Get one task with bounded recent run summaries, effects, events and task facts.
+Defaults: 3 runs and 20 events. Full run output and prompts are excluded unless
+explicitly requested.
+EOF
+      ;;
+    create-task) cat <<'EOF'
+usage: jarvis-tools create-task [--payload JSON|-] [--config PATH]
+
+Create one ordinary Task and hand it to the strong M5 executor. This command is
+only available when JARVIS_AGENT_STAGE=proactive. The payload uses the existing
+POST /api/tasks contract: title, action_type, target, background, source_payload
+and optional project_id. source_type=proactive is enforced.
+EOF
+      ;;
+    start-task) cat <<'EOF'
+usage: jarvis-tools start-task --id ID [--config PATH]
+
+Start one existing pending Task with the strong M5 executor. This command is
+only available when JARVIS_AGENT_STAGE=proactive. It returns after M5 claims the
+Task; use get-task in a later heartbeat to inspect and verify the result.
+EOF
+      ;;
+    update-task) cat <<'EOF'
+usage: jarvis-tools update-task --id ID [--payload JSON|-] [--config PATH]
+
+Update the mutable current surface of one non-terminal Task. This command is
+only available when JARVIS_AGENT_STAGE=proactive. The payload requires
+expected_version, reason, and at least one of title, target, summary or
+instruction. source_payload/background remain frozen. instruction is appended
+for M5 rather than rewriting source evidence. An awaiting_approval Task only
+accepts summary updates so an Agent cannot silently alter a proposal awaiting
+human approval.
+
+example:
+  jarvis-tools update-task --id 42 --payload '{"expected_version":2,"summary":"权限申请仍有效，等待 owner 审批","instruction":"恢复后先重新核验权限，再继续转换文档","reason":"跨日后等待条件仍有效，补充最新状态而不是关闭"}'
+EOF
+      ;;
+    close-task) cat <<'EOF'
+usage: jarvis-tools close-task --id ID [--payload JSON|-] [--config PATH]
+
+Close one existing non-terminal Task only after verified completion,
+cancellation, objective invalidation, or replacement by a surviving Task. This
+command is only available when JARVIS_AGENT_STAGE=proactive. Crossing a day,
+silence, or missing new evidence is not a close reason. The payload must contain
+expected_version and a non-empty result object. Put the concrete close reason in
+result.summary and the checked facts in result.evidence; the server records
+actor=proactive and stage=proactive_closed.
+
+example:
+  jarvis-tools close-task --id 42 --payload '{"expected_version":2,"result":{"summary":"昨日事项已失效，关闭","evidence":"目标会议已结束，且没有仍需交付的产物"}}'
+EOF
+      ;;
+    append-clue) cat <<'EOF'
+usage: jarvis-tools append-clue --source SOURCE --external-id ID --title TEXT
+                               [--content TEXT|-] [--occurred-at RFC3339] [--config PATH]
+
+Deliver one observed fact into the evidence stream so M3 can judge it. Report
+only what you actually saw; do not classify it, rate it, or chase follow-up
+material — working out what the fact means is M3's job.
+
+  --source       lowercase snake_case producer id, e.g. feishu_meeting. Picks
+                 the clue channel; a new source creates its channel on first use.
+  --external-id  producer-side id used for idempotency. Redelivering the same
+                 (source, external-id) returns inserted=false and changes nothing.
+  --title        one line stating the fact, e.g. "会议结束：公会基建Agent 日会".
+  --content      the raw detail. Use --content - or omit it to read stdin.
+  --occurred-at  when the fact happened (defaults to now).
+
+example:
+  jarvis-tools append-clue --source feishu_meeting --external-id 7667030332496007223 \
+    --title '会议结束：公会基建Agent 日会' --occurred-at 2026-07-27T14:01:00+08:00 --content - <<'TXT'
+  会议 ID：7667030332496007223
+  时间：2026-07-27 11:45 ~ 14:01
+  参会人：...
+  TXT
+EOF
+      ;;
+    list-scheduled-tasks) cat <<'EOF'
+usage: jarvis-tools list-scheduled-tasks [--status binding|active|running|completed] [--limit N] [--config PATH]
+List compact time-trigger summaries. binding entries are owned by waiting Tasks.
+Use get-scheduled-task for the instruction, context and latest result.
+EOF
+      ;;
+    get-scheduled-task) cat <<'EOF'
+usage: jarvis-tools get-scheduled-task --id ID [--config PATH]
+Get one time trigger in full.
+EOF
+      ;;
+    create-scheduled-task) cat <<'EOF'
+usage: jarvis-tools create-scheduled-task [--payload JSON|-] [--config PATH]
+Create a trigger for an independent new task. The payload must contain title,
+instruction, context_snapshot, schedule_type and its matching schedule field.
+
+once example:
+  {"title":"明早检查进展","instruction":"查询项目最新进展","context_snapshot":{},"schedule_type":"once","run_at":"2026-07-25T09:00:00+08:00"}
+daily example:
+  {"title":"每日汇总","instruction":"汇总今日进展","context_snapshot":{},"schedule_type":"daily","daily_time":"18:00"}
+interval example:
+  {"title":"轮询状态","instruction":"检查任务是否完成","context_snapshot":{},"schedule_type":"interval","interval_minutes":60}
+EOF
+      ;;
+    update-scheduled-task) cat <<'EOF'
+usage: jarvis-tools update-scheduled-task --id ID [--payload JSON|-] [--config PATH]
+Replace one standalone trigger using the same payload contract as create.
+Continuation triggers owned by waiting Tasks cannot be edited.
+EOF
+      ;;
+    trigger-scheduled-task) cat <<'EOF'
+usage: jarvis-tools trigger-scheduled-task --id ID [--config PATH]
+Run one standalone trigger immediately.
+EOF
+      ;;
+    set-todo-status) cat <<'EOF'
+usage: jarvis-tools set-todo-status --id TODO_ID --status observing|extracted
+                                    --reason TEXT|- [--actor NAME] [--config PATH]
+
+Move one clue between the two states that mean nobody is acting on it.
+
+  observing  Nothing to do right now, but keep the clue in view. No Task is
+             created; later evidence can bring it back for execution.
+  extracted  Hand the clue back for direct Task materialization and execution.
+
+Only observing and extracted are accepted target statuses; every other target
+status is rejected by the server.
+Pass "-" to --reason to read the reason from stdin.
+Actor defaults to JARVIS_AGENT_STAGE. Outside a Jarvis Agent process, pass
+--actor explicitly so the event provenance stays truthful.
+
+  jarvis-tools set-todo-status --id 412 --status observing \
+    --reason "对方已经自己处理完了，这里不需要我动手，先留着看"
+EOF
+      ;;
+    yield-until) cat <<'EOF'
+usage: jarvis-tools yield-until --at RFC3339 [--reason TEXT|-] [--config PATH]
+Pause the current executing Task and arrange its continuation. JARVIS_TASK_ID
+must be provided by the Task runner.
+EOF
+      ;;
+    delete-scheduled-task) cat <<'EOF'
+usage: jarvis-tools delete-scheduled-task --id ID [--config PATH]
+Delete a standalone trigger. A continuation owned by a waiting Task cannot be deleted.
+EOF
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+payload_help() {
+  local command_name="$1" description="$2"
+  printf 'usage: jarvis-tools %s [--payload JSON|-] [--config PATH]\n%s The payload must be a JSON object; use - or omit it to read stdin.\n' \
+    "$command_name" "$description"
+}
+
+payload_id_help() {
+  local command_name="$1" description="$2"
+  printf 'usage: jarvis-tools %s --id ID [--payload JSON|-] [--config PATH]\n%s The payload must be a JSON object; use - or omit it to read stdin.\n' \
+    "$command_name" "$description"
+}
+
+delete_id_help() {
+  local command_name="$1" description="$2"
+  printf 'usage: jarvis-tools %s --id ID [--config PATH]\n%s\n' "$command_name" "$description"
+}
+
+# resolve_api_base CONFIG_PATH
+# Prefer JARVIS_API_BASE; otherwise require and read server.addr from config.
+resolve_api_base() {
+  local config_path="$1"
+  if [[ -n "${JARVIS_API_BASE:-}" ]]; then
+    echo "${JARVIS_API_BASE%/}"
+    return
+  fi
+  local resolved=""
+  if [[ -f "$config_path" ]]; then
+    resolved="$config_path"
+  elif [[ "$config_path" != /* && -f "${REPO_ROOT}/${config_path}" ]]; then
+    resolved="${REPO_ROOT}/${config_path}"
+  fi
+  if [[ -z "$resolved" ]]; then
+    fail "config file not found: ${config_path}"
+  fi
+  local addr
+  addr="$(grep -E '^\s*addr:\s*' "$resolved" | head -n1 | sed -E 's/^[[:space:]]*addr:[[:space:]]*"?([^"#]+)"?.*/\1/' | tr -d '[:space:]')"
+  if [[ -z "$addr" ]]; then
+    fail "could not parse server.addr from ${resolved}"
+  fi
+  echo "http://${addr}"
+}
+
+# api_get PATH_AND_QUERY → prints response body to stdout; fails on HTTP/API error.
+api_get() {
+  local path_and_query="$1"
+  local url="${API_BASE}${path_and_query}"
+  local body http_code
+  body="$(curl -sS -w '\n%{http_code}' --max-time 30 "$url")" || fail "curl failed for ${url}"
+  http_code="$(printf '%s\n' "$body" | tail -n1)"
+  body="$(printf '%s\n' "$body" | sed '$d')"
+  local code=""
+  if printf '%s' "$body" | jq -e . >/dev/null 2>&1; then
+    code="$(printf '%s' "$body" | jq -r '.code // empty')"
+  fi
+  # Align with Go jarvis-tools mapNotFound → "not found".
+  if [[ "$http_code" == "404" || "$code" == "40420" ]]; then
+    fail "not found"
+  fi
+  if [[ "$http_code" != "200" ]]; then
+    fail "HTTP ${http_code} from ${url}: ${body}"
+  fi
+  if [[ -z "$code" ]]; then
+    fail "invalid JSON from ${url}"
+  fi
+  if [[ "$code" != "0" ]]; then
+    fail "API code=${code} from ${url}: ${body}"
+  fi
+  printf '%s' "$body"
+}
+
+# api_write METHOD PATH JSON_BODY → prints response body to stdout.
+api_write() {
+  local method="$1"
+  local path="$2"
+  local json_body="$3"
+  local url="${API_BASE}${path}"
+  local body http_code
+  body="$(curl -sS -w '\n%{http_code}' --max-time 30 -X "$method" \
+    -H 'Content-Type: application/json' --data "$json_body" "$url")" || fail "curl failed for ${url}"
+  http_code="$(printf '%s\n' "$body" | tail -n1)"
+  body="$(printf '%s\n' "$body" | sed '$d')"
+  local code=""
+  if printf '%s' "$body" | jq -e . >/dev/null 2>&1; then
+    code="$(printf '%s' "$body" | jq -r '.code // empty')"
+  fi
+  if [[ "$http_code" == "404" ]]; then
+    fail "not found"
+  fi
+  if [[ "$http_code" != "200" ]]; then
+    fail "HTTP ${http_code} from ${url}: ${body}"
+  fi
+  if [[ -z "$code" || "$code" != "0" ]]; then
+    fail "invalid API response from ${url}: ${body}"
+  fi
+  printf '%s' "$body"
+}
+
+# read_note_arg → resolves NOTE: "-" means read from stdin, else literal value.
+# Trims a single trailing newline (mirrors Go readContentArg TrimRight "\n").
+read_note_arg() {
+  local text
+  if [[ "$NOTE" == "-" ]]; then
+    text="$(cat)"
+  else
+    text="$NOTE"
+  fi
+  # strip trailing newlines
+  printf '%s' "${text%$'\n'}"
+}
+
+# read_payload_object resolves PAYLOAD and validates the one shared contract used
+# by world-model writes. The server remains the owner of each payload's fields.
+read_payload_object() {
+  local command_name="$1" payload
+  if [[ "$PAYLOAD" == "-" ]]; then
+    payload="$(cat)"
+  else
+    payload="$PAYLOAD"
+  fi
+  printf '%s' "$payload" | jq -e 'type == "object"' >/dev/null 2>&1 ||
+    fail "${command_name} payload must be a JSON object"
+  printf '%s' "$payload"
+}
+
+# emit compact JSON (+ newline) to stdout — the ONLY successful stdout write.
+emit() {
+  printf '%s\n' "$1" | jq -c .
+}
+
+# fetch_all_items PATH_PREFIX [QUERY] → prints all items across pages. QUERY is
+# passed to every page, without the leading question mark.
+fetch_all_items() {
+  local path_prefix="$1"
+  local query="${2:-}"
+  local page=1
+  local page_size=100
+  local all='[]'
+  while true; do
+    local body items total n
+    local page_query="page=${page}&page_size=${page_size}"
+    if [[ -n "$query" ]]; then
+      page_query="${query}&${page_query}"
+    fi
+    body="$(api_get "${path_prefix}?${page_query}")"
+    items="$(printf '%s' "$body" | jq -c '.data.items')"
+    total="$(printf '%s' "$body" | jq -er '.data.total')"
+    n="$(printf '%s' "$items" | jq -er 'length')"
+    all="$(jq -nc --argjson a "$all" --argjson b "$items" '$a + $b')"
+    if (( page * page_size >= total )) || (( n == 0 )); then
+      break
+    fi
+    page=$((page + 1))
+  done
+  printf '%s' "$all"
+}
+
+# --- flag helpers -----------------------------------------------------------
+
+CONFIG_DEFAULT="conf/config.yaml"
+CONFIG_PATH="$CONFIG_DEFAULT"
+ID=""
+CODE=""
+CHAT_ID=""
+OPEN_ID=""
+ROLE=""
+PROJECT_ID=""
+PERSON_OPEN_ID=""
+PRINCIPAL_ONLY="false"
+KEYWORD=""
+NOTE="-"
+NAME=""
+STATUS=""
+LIMIT="200"
+PAYLOAD="-"
+AT=""
+REASON="-"
+SOURCE=""
+SOURCE_ID=""
+ACTOR=""
+EXTERNAL_ID=""
+TITLE=""
+CONTENT="-"
+OCCURRED_AT=""
+ENTITY_TYPE=""
+ENTITY_ID=""
+RUN_LIMIT="3"
+EVENT_LIMIT="20"
+INCLUDE_RUN_OUTPUT="false"
+INCLUDE_PROMPT="false"
+MESSAGE_ID=""
+RESOURCE_TYPE=""
+SENDER_OPEN_ID=""
+
+reset_flags() {
+  CONFIG_PATH="$CONFIG_DEFAULT"
+  ID=""
+  CODE=""
+  CHAT_ID=""
+  OPEN_ID=""
+  ROLE=""
+  PROJECT_ID=""
+  PERSON_OPEN_ID=""
+  PRINCIPAL_ONLY="false"
+  KEYWORD=""
+  NOTE="-"
+  NAME=""
+  STATUS=""
+  LIMIT="200"
+  PAYLOAD="-"
+  AT=""
+  REASON="-"
+  SOURCE=""
+  SOURCE_ID=""
+  ACTOR=""
+  EXTERNAL_ID=""
+  TITLE=""
+  CONTENT="-"
+  OCCURRED_AT=""
+  SUBJECT_TYPE=""
+  SUBJECT_ID=""
+  DESCRIPTION="-"
+  DATE=""
+  ENTITY_TYPE=""
+  ENTITY_ID=""
+  RUN_LIMIT="3"
+  EVENT_LIMIT="20"
+  INCLUDE_RUN_OUTPUT="false"
+  INCLUDE_PROMPT="false"
+  MESSAGE_ID=""
+  RESOURCE_TYPE=""
+  SENDER_OPEN_ID=""
+}
+
+# Each command declares its own accepted flags. The parser is shared, but a flag
+# that belongs to another command is an error rather than an ignored no-op.
+require_command_flag() {
+  local cmd="$1" flag="$2"
+  local allowed="--config"
+  case "$cmd" in
+    list-projects | list-key-matters) allowed+=" --keyword --limit" ;;
+    get-project) allowed+=" --id --code" ;;
+    get-key-matter | touch-key-matter | touch-resource) allowed+=" --id" ;;
+    create-project | create-key-matter | update-principal | create-person | create-resource | create-relation | create-task) allowed+=" --payload" ;;
+    update-project | update-key-matter | update-group | update-person | update-resource | update-relation) allowed+=" --id --payload" ;;
+    archive-project | close-key-matter | delete-person | delete-resource | delete-relation) allowed+=" --id" ;;
+    list-groups) allowed+=" --keyword --limit" ;;
+    get-group) allowed+=" --chat-id" ;;
+    get-context) allowed+=" --chat-id --project-id" ;;
+    get-principal | get-shared-memory) ;;
+    list-persons) allowed+=" --role --keyword --limit" ;;
+    get-person) allowed+=" --open-id" ;;
+    query-resources) allowed+=" --project-id --person-open-id --principal-only --keyword --limit" ;;
+    get-resource) allowed+=" --id" ;;
+    query-messages) allowed+=" --chat-id --sender-open-id --keyword --date --limit" ;;
+    query-captured-resources) allowed+=" --chat-id --message-id --resource-type --keyword --limit" ;;
+    get-captured-resource) allowed+=" --id" ;;
+    list-skills) allowed+=" --keyword" ;;
+    get-skill) allowed+=" --name" ;;
+    append-shared-memory) allowed+=" --note" ;;
+    append-clue) allowed+=" --source --external-id --title --content --occurred-at" ;;
+    append-fact) allowed+=" --subject-type --subject-id --description --occurred-at --source --source-id" ;;
+    list-facts) allowed+=" --subject-type --subject-id --date --limit" ;;
+    list-relations) allowed+=" --entity-type --entity-id --limit" ;;
+    list-todos) allowed+=" --date --status --limit" ;;
+    get-todo) allowed+=" --id" ;;
+    list-tasks) allowed+=" --date --status --limit" ;;
+    get-task) allowed+=" --id --run-limit --event-limit --include-run-output --include-prompt" ;;
+    start-task) allowed+=" --id" ;;
+    update-task) allowed+=" --id --payload" ;;
+    close-task) allowed+=" --id --payload" ;;
+    list-scheduled-tasks) allowed+=" --status --limit" ;;
+    get-scheduled-task) allowed+=" --id" ;;
+    create-scheduled-task) allowed+=" --payload" ;;
+    update-scheduled-task) allowed+=" --id --payload" ;;
+    trigger-scheduled-task) allowed+=" --id" ;;
+    set-todo-status) allowed+=" --id --status --reason --actor" ;;
+    yield-until) allowed+=" --at --reason" ;;
+    delete-scheduled-task) allowed+=" --id" ;;
+    *) fail "unknown subcommand \"${cmd}\"" ;;
+  esac
+  case " ${allowed} " in
+    *" ${flag} "*) ;;
+    *) fail "${cmd} does not accept ${flag}" ;;
+  esac
+}
+
+require_limit() {
+  local cmd="$1" value="$2" max="$3"
+  [[ "$value" =~ ^[1-9][0-9]*$ ]] || fail "${cmd} limit must be a positive integer"
+  (( value <= max )) || fail "${cmd} limit must not exceed ${max}"
+}
+
+# parse_kv_flag NAME VALUE — supports --name value and --name=value via caller.
+consume_flags() {
+  # remaining args in "$@"
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == --* ]]; then
+      require_command_flag "$SUBCOMMAND" "${1%%=*}"
+    fi
+    case "$1" in
+      --config)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        CONFIG_PATH="$2"
+        shift 2
+        ;;
+      --config=*)
+        CONFIG_PATH="${1#--config=}"
+        shift
+        ;;
+      --id)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        ID="$2"
+        shift 2
+        ;;
+      --id=*)
+        ID="${1#--id=}"
+        shift
+        ;;
+      --code)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        CODE="$2"
+        shift 2
+        ;;
+      --code=*)
+        CODE="${1#--code=}"
+        shift
+        ;;
+      --chat-id)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        CHAT_ID="$2"
+        shift 2
+        ;;
+      --chat-id=*)
+        CHAT_ID="${1#--chat-id=}"
+        shift
+        ;;
+      --open-id)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        OPEN_ID="$2"
+        shift 2
+        ;;
+      --open-id=*)
+        OPEN_ID="${1#--open-id=}"
+        shift
+        ;;
+      --role)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        ROLE="$2"
+        shift 2
+        ;;
+      --role=*)
+        ROLE="${1#--role=}"
+        shift
+        ;;
+      --project-id)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        PROJECT_ID="$2"
+        shift 2
+        ;;
+      --project-id=*)
+        PROJECT_ID="${1#--project-id=}"
+        shift
+        ;;
+      --person-open-id)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        PERSON_OPEN_ID="$2"
+        shift 2
+        ;;
+      --person-open-id=*)
+        PERSON_OPEN_ID="${1#--person-open-id=}"
+        shift
+        ;;
+      --principal-only)
+        PRINCIPAL_ONLY="true"
+        shift
+        ;;
+      --keyword)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        KEYWORD="$2"
+        shift 2
+        ;;
+      --keyword=*)
+        KEYWORD="${1#--keyword=}"
+        shift
+        ;;
+      --note)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        NOTE="$2"
+        shift 2
+        ;;
+      --note=*)
+        NOTE="${1#--note=}"
+        shift
+        ;;
+      --name)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        NAME="$2"
+        shift 2
+        ;;
+      --name=*)
+        NAME="${1#--name=}"
+        shift
+        ;;
+      --status)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        STATUS="$2"
+        shift 2
+        ;;
+      --status=*)
+        STATUS="${1#--status=}"
+        shift
+        ;;
+      --limit)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        LIMIT="$2"
+        shift 2
+        ;;
+      --limit=*)
+        LIMIT="${1#--limit=}"
+        shift
+        ;;
+      --payload)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        PAYLOAD="$2"
+        shift 2
+        ;;
+      --payload=*)
+        PAYLOAD="${1#--payload=}"
+        shift
+        ;;
+      --at)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        AT="$2"
+        shift 2
+        ;;
+      --at=*)
+        AT="${1#--at=}"
+        shift
+        ;;
+      --reason)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        REASON="$2"
+        shift 2
+        ;;
+      --reason=*)
+        REASON="${1#--reason=}"
+        shift
+        ;;
+      --source)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        SOURCE="$2"
+        shift 2
+        ;;
+      --source=*)
+        SOURCE="${1#--source=}"
+        shift
+        ;;
+      --source-id)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        SOURCE_ID="$2"
+        shift 2
+        ;;
+      --source-id=*)
+        SOURCE_ID="${1#--source-id=}"
+        shift
+        ;;
+      --actor)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        ACTOR="$2"
+        shift 2
+        ;;
+      --actor=*)
+        ACTOR="${1#--actor=}"
+        shift
+        ;;
+      --external-id)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        EXTERNAL_ID="$2"
+        shift 2
+        ;;
+      --external-id=*)
+        EXTERNAL_ID="${1#--external-id=}"
+        shift
+        ;;
+      --title)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        TITLE="$2"
+        shift 2
+        ;;
+      --title=*)
+        TITLE="${1#--title=}"
+        shift
+        ;;
+      --content)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        CONTENT="$2"
+        shift 2
+        ;;
+      --content=*)
+        CONTENT="${1#--content=}"
+        shift
+        ;;
+      --subject-type)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        SUBJECT_TYPE="$2"
+        shift 2
+        ;;
+      --subject-type=*)
+        SUBJECT_TYPE="${1#--subject-type=}"
+        shift
+        ;;
+      --subject-id)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        SUBJECT_ID="$2"
+        shift 2
+        ;;
+      --subject-id=*)
+        SUBJECT_ID="${1#--subject-id=}"
+        shift
+        ;;
+      --description)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        DESCRIPTION="$2"
+        shift 2
+        ;;
+      --description=*)
+        DESCRIPTION="${1#--description=}"
+        shift
+        ;;
+      --date)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        DATE="$2"
+        shift 2
+        ;;
+      --date=*)
+        DATE="${1#--date=}"
+        shift
+        ;;
+      --occurred-at)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        OCCURRED_AT="$2"
+        shift 2
+        ;;
+      --occurred-at=*)
+        OCCURRED_AT="${1#--occurred-at=}"
+        shift
+        ;;
+      --entity-type)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        ENTITY_TYPE="$2"
+        shift 2
+        ;;
+      --entity-type=*)
+        ENTITY_TYPE="${1#--entity-type=}"
+        shift
+        ;;
+      --entity-id)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        ENTITY_ID="$2"
+        shift 2
+        ;;
+      --entity-id=*)
+        ENTITY_ID="${1#--entity-id=}"
+        shift
+        ;;
+      --run-limit)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        RUN_LIMIT="$2"
+        shift 2
+        ;;
+      --run-limit=*)
+        RUN_LIMIT="${1#--run-limit=}"
+        shift
+        ;;
+      --event-limit)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        EVENT_LIMIT="$2"
+        shift 2
+        ;;
+      --event-limit=*)
+        EVENT_LIMIT="${1#--event-limit=}"
+        shift
+        ;;
+      --include-run-output)
+        INCLUDE_RUN_OUTPUT="true"
+        shift
+        ;;
+      --include-prompt)
+        INCLUDE_PROMPT="true"
+        shift
+        ;;
+      --message-id)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        MESSAGE_ID="$2"
+        shift 2
+        ;;
+      --message-id=*)
+        MESSAGE_ID="${1#--message-id=}"
+        shift
+        ;;
+      --resource-type)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        RESOURCE_TYPE="$2"
+        shift 2
+        ;;
+      --resource-type=*)
+        RESOURCE_TYPE="${1#--resource-type=}"
+        shift
+        ;;
+      --sender-open-id)
+        [[ $# -ge 2 ]] || fail "$1 requires a value"
+        SENDER_OPEN_ID="$2"
+        shift 2
+        ;;
+      --sender-open-id=*)
+        SENDER_OPEN_ID="${1#--sender-open-id=}"
+        shift
+        ;;
+      -*)
+        fail "unknown flag: $1"
+        ;;
+      *)
+        fail "unexpected argument: $1"
+        ;;
+    esac
+  done
+}
+
+# --- subcommands ------------------------------------------------------------
+
+cmd_list_projects() {
+  reset_flags
+  LIMIT="20"
+  consume_flags "$@"
+  require_limit list-projects "$LIMIT" 100
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local items total
+  if [[ -z "$KEYWORD" ]]; then
+    local body
+    body="$(api_get "/api/projects?page=1&page_size=${LIMIT}")"
+    items="$(printf '%s' "$body" | jq -c '.data.items')"
+    total="$(printf '%s' "$body" | jq -er '.data.total')"
+  else
+    local all
+    all="$(fetch_all_items /api/projects)"
+    items="$(printf '%s' "$all" | jq -c --arg keyword "$KEYWORD" --argjson limit "$LIMIT" '
+      [.[] | select((([.code,.name,.description,.role,.status] | map(. // "") | join(" ")) | ascii_downcase | contains($keyword | ascii_downcase)))][: $limit]')"
+    total="$(printf '%s' "$all" | jq -r --arg keyword "$KEYWORD" '
+      [.[] | select((([.code,.name,.description,.role,.status] | map(. // "") | join(" ")) | ascii_downcase | contains($keyword | ascii_downcase)))] | length')"
+  fi
+  items="$(printf '%s' "$items" | jq -c '[.[] | {id,code,name,role,status,priority,description,updated_at}]')"
+  emit "$(jq -cn --argjson total "$total" --argjson projects "$items" '{total:$total,projects:$projects}')"
+}
+
+cmd_get_project() {
+  reset_flags
+  consume_flags "$@"
+  local has_id=0 has_code=0
+  [[ -n "$ID" ]] && has_id=1
+  [[ -n "$CODE" ]] && has_code=1
+  if (( has_id + has_code != 1 )); then
+    fail "get-project requires exactly one of --id or --code"
+  fi
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  if (( has_id )); then
+    [[ "$ID" =~ ^[1-9][0-9]*$ ]] || fail "get-project --id must be a positive integer"
+    local body project
+    body="$(api_get "/api/projects/${ID}")"
+    project="$(printf '%s' "$body" | jq -c '.data')"
+    emit "$project"
+    return
+  fi
+  local items matched
+  items="$(fetch_all_items /api/projects)"
+  matched="$(printf '%s' "$items" | jq -c --arg code "$CODE" '[.[] | select(.code == $code)]')"
+  local n
+  n="$(printf '%s' "$matched" | jq -er 'length')"
+  if (( n == 0 )); then
+    fail "not found"
+  fi
+  if (( n > 1 )); then
+    fail "multiple projects matched code=${CODE}"
+  fi
+  local project
+  project="$(printf '%s' "$matched" | jq -c '.[0]')"
+  emit "$project"
+}
+
+cmd_list_key_matters() {
+  reset_flags
+  LIMIT="20"
+  consume_flags "$@"
+  require_limit list-key-matters "$LIMIT" 100
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local items total
+  if [[ -z "$KEYWORD" ]]; then
+    local body
+    body="$(api_get "/api/key-matters?page=1&page_size=${LIMIT}")"
+    items="$(printf '%s' "$body" | jq -c '.data.items')"
+    total="$(printf '%s' "$body" | jq -er '.data.total')"
+  else
+    local all
+    all="$(fetch_all_items /api/key-matters)"
+    items="$(printf '%s' "$all" | jq -c --arg keyword "$KEYWORD" --argjson limit "$LIMIT" '
+      [.[] | select((([.title,.status,.summary] | map(. // "") | join(" ")) | ascii_downcase | contains($keyword | ascii_downcase)))][: $limit]')"
+    total="$(printf '%s' "$all" | jq -r --arg keyword "$KEYWORD" '
+      [.[] | select((([.title,.status,.summary] | map(. // "") | join(" ")) | ascii_downcase | contains($keyword | ascii_downcase)))] | length')"
+  fi
+  items="$(printf '%s' "$items" | jq -c '[.[] | {id,title,status,summary,project_id,due_at,last_progress_at,last_active_at}]')"
+  emit "$(jq -cn --argjson total "$total" --argjson key_matters "$items" '{total:$total,key_matters:$key_matters}')"
+}
+
+cmd_get_key_matter() {
+  reset_flags
+  consume_flags "$@"
+  [[ "$ID" =~ ^[1-9][0-9]*$ ]] || fail "get-key-matter requires positive --id"
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local body
+  body="$(api_get "/api/key-matters/${ID}")"
+  emit "$(printf '%s' "$body" | jq -c '.data')"
+}
+
+cmd_payload_create() {
+  local command_name="$1" method="$2" path="$3"
+  shift 3
+  reset_flags
+  consume_flags "$@"
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local payload body
+  payload="$(read_payload_object "$command_name")"
+  body="$(api_write "$method" "$path" "$payload")"
+  emit "$(printf '%s' "$body" | jq -c '.data')"
+}
+
+cmd_payload_by_id() {
+  local command_name="$1" method="$2" path_prefix="$3"
+  shift 3
+  reset_flags
+  consume_flags "$@"
+  [[ "$ID" =~ ^[1-9][0-9]*$ ]] || fail "${command_name} requires positive --id"
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local payload body
+  payload="$(read_payload_object "$command_name")"
+  body="$(api_write "$method" "${path_prefix}/${ID}" "$payload")"
+  emit "$(printf '%s' "$body" | jq -c '.data')"
+}
+
+cmd_delete_by_id() {
+  local command_name="$1" path_prefix="$2"
+  shift 2
+  reset_flags
+  consume_flags "$@"
+  [[ "$ID" =~ ^[1-9][0-9]*$ ]] || fail "${command_name} requires positive --id"
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local body
+  body="$(api_write DELETE "${path_prefix}/${ID}" '{}')"
+  emit "$(printf '%s' "$body" | jq -c '.data')"
+}
+
+cmd_touch_by_id() {
+  local command_name="$1" path_prefix="$2"
+  shift 2
+  reset_flags
+  consume_flags "$@"
+  [[ "$ID" =~ ^[1-9][0-9]*$ ]] || fail "${command_name} requires positive --id"
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local body
+  body="$(api_write POST "${path_prefix}/${ID}/touch" '{}')"
+  emit "$(printf '%s' "$body" | jq -c '.data')"
+}
+
+cmd_list_groups() {
+  reset_flags
+  LIMIT="20"
+  consume_flags "$@"
+  require_limit list-groups "$LIMIT" 100
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local query="page=1&page_size=${LIMIT}"
+  if [[ -n "$KEYWORD" ]]; then
+    query="${query}&keyword=$(jq -rn --arg s "$KEYWORD" '$s|@uri')"
+  fi
+  local body
+  body="$(api_get "/api/groups?${query}")"
+  emit "$(printf '%s' "$body" | jq -c '.data | {
+    total,page,page_size,broadened,
+    items:[.items[] | {id,chat_id,name,description,project:(if .project == null then null else {id:.project.id,code:.project.code,name:.project.name} end),tier,pinned,is_key_group,related_group,last_active_at,message_count}]
+  }')"
+}
+
+cmd_get_group() {
+  reset_flags
+  consume_flags "$@"
+  if [[ -z "$CHAT_ID" ]]; then
+    fail "get-group requires --chat-id"
+  fi
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  # /api/groups has no by-chat-id GET; keyword searches chat_id (and name/...).
+  # Use keyword to narrow, then exact-match on chat_id (fail-fast if missing).
+  local enc body matched n
+  enc="$(jq -rn --arg s "$CHAT_ID" '$s|@uri')"
+  body="$(api_get "/api/groups?keyword=${enc}&page=1&page_size=100")"
+  matched="$(printf '%s' "$body" | jq -c --arg cid "$CHAT_ID" '[.data.items[] | select(.chat_id == $cid)]')"
+  n="$(printf '%s' "$matched" | jq -er 'length')"
+  if (( n == 0 )); then
+    fail "not found"
+  fi
+  if (( n > 1 )); then
+    fail "multiple groups matched chat_id=${CHAT_ID}"
+  fi
+  emit "$(printf '%s' "$matched" | jq -c '.[0]')"
+}
+
+cmd_get_context() {
+  reset_flags
+  consume_flags "$@"
+  if [[ -n "$PROJECT_ID" && ! "$PROJECT_ID" =~ ^[1-9][0-9]*$ ]]; then
+    fail "get-context --project-id must be a positive integer"
+  fi
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local payload body
+  payload="$(jq -nc --arg chat_id "$CHAT_ID" --arg project_id "$PROJECT_ID" '{
+    chat_id: $chat_id,
+    project_id: (if $project_id == "" then null else ($project_id | tonumber) end)
+  }')"
+  body="$(api_write POST /api/context "$payload")"
+  emit "$(printf '%s' "$body" | jq -c '.data')"
+}
+
+cmd_get_principal() {
+  reset_flags
+  consume_flags "$@"
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local body
+  body="$(api_get /api/profile)"
+  emit "$(printf '%s' "$body" | jq -c '.data')"
+}
+
+cmd_list_persons() {
+  reset_flags
+  LIMIT="20"
+  consume_flags "$@"
+  require_limit list-persons "$LIMIT" 100
+  if [[ -n "$ROLE" && ! "$ROLE" =~ ^(leader|key|colleague|other)$ ]]; then
+    fail "list-persons --role must be leader, key, colleague or other"
+  fi
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local items total
+  if [[ -z "$ROLE" && -z "$KEYWORD" ]]; then
+    local body
+    body="$(api_get "/api/persons?page=1&page_size=${LIMIT}")"
+    items="$(printf '%s' "$body" | jq -c '.data.items')"
+    total="$(printf '%s' "$body" | jq -r '.data.total')"
+  else
+    items="$(fetch_all_items /api/persons)"
+    if [[ -n "$ROLE" ]]; then
+      items="$(printf '%s' "$items" | jq -c --arg role "$ROLE" '[.[] | select(.role == $role)]')"
+    fi
+    if [[ -n "$KEYWORD" ]]; then
+      items="$(printf '%s' "$items" | jq -c --arg keyword "$KEYWORD" '
+        [.[] | select((([.name,.en_name,.department,.title,.role,.relation,.open_id] | map(. // "") | join(" ")) | ascii_downcase | contains($keyword | ascii_downcase)))]')"
+    fi
+    total="$(printf '%s' "$items" | jq -r 'length')"
+  fi
+  items="$(printf '%s' "$items" | jq -c --argjson limit "$LIMIT" '[.[:$limit][] | {id,open_id,name,en_name,department,title,role,relation,is_active,updated_at}]')"
+  emit "$(jq -cn --argjson total "$total" --argjson persons "$items" '{total:$total,persons:$persons}')"
+}
+
+cmd_get_person() {
+  reset_flags
+  consume_flags "$@"
+  if [[ -z "$OPEN_ID" ]]; then
+    fail "get-person requires --open-id"
+  fi
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  # GET /api/persons/:id is DB id, not open_id — list + filter.
+  local items matched n
+  items="$(fetch_all_items /api/persons)"
+  matched="$(printf '%s' "$items" | jq -c --arg oid "$OPEN_ID" '[.[] | select(.open_id == $oid)]')"
+  n="$(printf '%s' "$matched" | jq -er 'length')"
+  if (( n == 0 )); then
+    fail "not found"
+  fi
+  if (( n > 1 )); then
+    fail "multiple persons matched open_id=${OPEN_ID}"
+  fi
+  local person
+  person="$(printf '%s' "$matched" | jq -c '.[0]')"
+  emit "$person"
+}
+
+cmd_query_resources() {
+  reset_flags
+  LIMIT="20"
+  consume_flags "$@"
+  require_limit query-resources "$LIMIT" 100
+  if [[ -n "$PROJECT_ID" && ! "$PROJECT_ID" =~ ^[1-9][0-9]*$ ]]; then
+    fail "query-resources --project-id must be a positive integer"
+  fi
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+
+  local person_id=""
+  if [[ -n "$PERSON_OPEN_ID" ]]; then
+    local persons matched n
+    persons="$(fetch_all_items /api/persons)"
+    matched="$(printf '%s' "$persons" | jq -c --arg oid "$PERSON_OPEN_ID" '[.[] | select(.open_id == $oid)]')"
+    n="$(printf '%s' "$matched" | jq -er 'length')"
+    (( n == 1 )) || fail "query-resources expected exactly one person for open_id=${PERSON_OPEN_ID}, got ${n}"
+    person_id="$(printf '%s' "$matched" | jq -er '.[0].id')"
+  fi
+
+  local filters="active_only=true"
+  if [[ -n "$PROJECT_ID" ]]; then
+    filters="${filters}&project_id=${PROJECT_ID}"
+  fi
+  if [[ -n "$person_id" ]]; then
+    filters="${filters}&person_id=${person_id}"
+  fi
+  if [[ "$PRINCIPAL_ONLY" == "true" ]]; then
+    filters="${filters}&principal_only=true"
+  fi
+  local items filtered total
+  if [[ -z "$KEYWORD" ]]; then
+    local body
+    body="$(api_get "/api/resources?${filters}&page=1&page_size=${LIMIT}")"
+    filtered="$(printf '%s' "$body" | jq -c '.data.items')"
+    total="$(printf '%s' "$body" | jq -r '.data.total')"
+  else
+    items="$(fetch_all_items /api/resources "$filters")"
+    filtered="$(printf '%s' "$items" | jq -c \
+      --arg keyword "$KEYWORD" \
+      --argjson limit "$LIMIT" '
+        [.[]
+         | select(([
+             .title, .resource_type, .url, .description, .person_name, .project_name
+           ] | map(. // "") | join(" ")) | ascii_downcase | contains($keyword | ascii_downcase))
+        ][: $limit]')"
+    total="$(printf '%s' "$items" | jq -r --arg keyword "$KEYWORD" '
+      [.[] | select(([
+          .title, .resource_type, .url, .description, .person_name, .project_name
+        ] | map(. // "") | join(" ")) | ascii_downcase | contains($keyword | ascii_downcase))] | length')"
+  fi
+  emit "$(jq -cn --argjson total "$total" --argjson resources "$filtered" '{total:$total,count:($resources|length),resources:$resources}')"
+}
+
+cmd_get_resource() {
+  reset_flags
+  consume_flags "$@"
+  [[ "$ID" =~ ^[1-9][0-9]*$ ]] || fail "get-resource requires positive --id"
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  emit "$(api_get "/api/resources/${ID}" | jq -c '.data')"
+}
+
+cmd_query_messages() {
+  reset_flags
+  LIMIT="20"
+  consume_flags "$@"
+  require_limit query-messages "$LIMIT" 100
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local query="limit=${LIMIT}" value
+  if [[ -n "$CHAT_ID" ]]; then
+    value="$(jq -rn --arg s "$CHAT_ID" '$s|@uri')"
+    query="${query}&chat_id=${value}"
+  fi
+  if [[ -n "$SENDER_OPEN_ID" ]]; then
+    value="$(jq -rn --arg s "$SENDER_OPEN_ID" '$s|@uri')"
+    query="${query}&sender_open_id=${value}"
+  fi
+  if [[ -n "$KEYWORD" ]]; then
+    value="$(jq -rn --arg s "$KEYWORD" '$s|@uri')"
+    query="${query}&keyword=${value}"
+  fi
+  if [[ -n "$DATE" ]]; then
+    local from until
+    read -r from until <<<"$(local_day_bounds "$DATE" query-messages)"
+    query="${query}&from=$(jq -rn --arg s "$from" '$s|@uri')&until=$(jq -rn --arg s "$until" '$s|@uri')"
+  fi
+  emit "$(api_get "/api/messages?${query}" | jq -c '.data')"
+}
+
+cmd_query_captured_resources() {
+  reset_flags
+  LIMIT="20"
+  consume_flags "$@"
+  require_limit query-captured-resources "$LIMIT" 100
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local query="limit=${LIMIT}" value
+  if [[ -n "$CHAT_ID" ]]; then
+    value="$(jq -rn --arg s "$CHAT_ID" '$s|@uri')"
+    query="${query}&chat_id=${value}"
+  fi
+  if [[ -n "$MESSAGE_ID" ]]; then
+    value="$(jq -rn --arg s "$MESSAGE_ID" '$s|@uri')"
+    query="${query}&message_id=${value}"
+  fi
+  if [[ -n "$RESOURCE_TYPE" ]]; then
+    value="$(jq -rn --arg s "$RESOURCE_TYPE" '$s|@uri')"
+    query="${query}&resource_type=${value}"
+  fi
+  if [[ -n "$KEYWORD" ]]; then
+    value="$(jq -rn --arg s "$KEYWORD" '$s|@uri')"
+    query="${query}&keyword=${value}"
+  fi
+  emit "$(api_get "/api/captured-resources?${query}" | jq -c '.data')"
+}
+
+cmd_get_captured_resource() {
+  reset_flags
+  consume_flags "$@"
+  [[ "$ID" =~ ^[1-9][0-9]*$ ]] || fail "get-captured-resource requires positive --id"
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  emit "$(api_get "/api/captured-resources/${ID}" | jq -c '.data')"
+}
+
+cmd_get_shared_memory() {
+  reset_flags
+  consume_flags "$@"
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local body
+  body="$(api_get /api/shared-memory)"
+  emit "$(printf '%s' "$body" | jq -c '.data')"
+}
+
+cmd_list_skills() {
+  reset_flags
+  consume_flags "$@"
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local body
+  body="$(api_get /api/skills)"
+  emit "$(printf '%s' "$body" | jq -c --arg keyword "$KEYWORD" '.data | {
+    items:[.items[] | select($keyword == "" or (([.name,.description] | map(. // "") | join(" ")) | ascii_downcase | contains($keyword | ascii_downcase))) | {name,description,stages,is_enabled}]
+  }')"
+}
+
+cmd_get_skill() {
+  reset_flags
+  consume_flags "$@"
+  [[ -n "$NAME" ]] || fail "get-skill requires --name"
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local enc body
+  enc="$(jq -rn --arg s "$NAME" '$s|@uri')"
+  body="$(api_get "/api/skills/${enc}/content")"
+  emit "$(printf '%s' "$body" | jq -c '.data')"
+}
+
+# append-shared-memory uses one server-side append operation so concurrent agents
+# cannot overwrite each other's entries.
+cmd_append_shared_memory() {
+  reset_flags
+  consume_flags "$@"
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local note
+  note="$(read_note_arg)"
+  if [[ -z "${note//[[:space:]]/}" ]]; then
+    fail "append-shared-memory note is empty"
+  fi
+  local payload body
+  payload="$(jq -cn --arg note "$note" '{note:$note}')"
+  body="$(api_write POST /api/shared-memory/append "$payload")"
+  emit "$(printf '%s' "$body" | jq -c '.data')"
+}
+
+# append-clue hands M2 a raw observed fact. The server owns idempotency, so a
+# producer can safely redeliver the same (source, external-id) on every run.
+cmd_append_clue() {
+  reset_flags
+  consume_flags "$@"
+  [[ -n "$SOURCE" ]] || fail "append-clue requires --source"
+  [[ -n "$EXTERNAL_ID" ]] || fail "append-clue requires --external-id"
+  [[ -n "$TITLE" ]] || fail "append-clue requires --title"
+  local content
+  if [[ "$CONTENT" == "-" ]]; then
+    content="$(cat)"
+  else
+    content="$CONTENT"
+  fi
+  content="${content%$'\n'}"
+  local occurred_at="$OCCURRED_AT"
+  if [[ -z "$occurred_at" ]]; then
+    occurred_at="$(date +%Y-%m-%dT%H:%M:%S%z | sed -E 's/([0-9]{2})([0-9]{2})$/\1:\2/')"
+  fi
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local payload body
+  payload="$(jq -cn --arg source "$SOURCE" --arg external_id "$EXTERNAL_ID" \
+    --arg title "$TITLE" --arg content "$content" --arg occurred_at "$occurred_at" \
+    '{source:$source,external_id:$external_id,title:$title,content:$content,occurred_at:$occurred_at}')"
+  body="$(api_write POST /api/clues "$payload")"
+  emit "$(printf '%s' "$body" | jq -c '.data')"
+}
+
+# append-fact records one thing that happened about a subject. Facts are the
+# side channel the daily digests read back, so write them as they are learned
+# rather than batching them at the end.
+cmd_append_fact() {
+  reset_flags
+  consume_flags "$@"
+  [[ -n "$SUBJECT_TYPE" ]] || fail "append-fact requires --subject-type"
+  [[ "$SUBJECT_ID" =~ ^[1-9][0-9]*$ ]] || fail "append-fact requires a positive --subject-id"
+  local description
+  if [[ "$DESCRIPTION" == "-" ]]; then
+    description="$(cat)"
+  else
+    description="$DESCRIPTION"
+  fi
+  description="${description%$'\n'}"
+  [[ -n "${description//[[:space:]]/}" ]] || fail "append-fact description is empty"
+  local occurred_at="$OCCURRED_AT"
+  if [[ -z "$occurred_at" ]]; then
+    occurred_at="$(date +%Y-%m-%dT%H:%M:%S%z | sed -E 's/([0-9]{2})([0-9]{2})$/\1:\2/')"
+  fi
+  # Default both provenance fields to the running Task. An explicit source is
+  # independent and never accidentally borrows JARVIS_TASK_ID.
+  if [[ -n "$SOURCE_ID" && -z "$SOURCE" ]]; then
+    fail "append-fact --source-id requires --source"
+  fi
+  local source_kind="$SOURCE"
+  local source_id="null"
+  if [[ -z "$source_kind" && "${JARVIS_TASK_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
+    source_kind="task"
+    source_id="$JARVIS_TASK_ID"
+  elif [[ -z "$source_kind" && "${JARVIS_AGENT_STAGE:-}" == "proactive" ]]; then
+    source_kind="proactive"
+  elif [[ -z "$source_kind" && "${JARVIS_AGENT_STAGE:-}" == "factengine" ]]; then
+    source_kind="factengine"
+  elif [[ -n "$SOURCE_ID" ]]; then
+    [[ -n "$source_kind" ]] || fail "append-fact --source-id requires --source"
+    [[ "$SOURCE_ID" =~ ^[1-9][0-9]*$ ]] || fail "append-fact --source-id must be a positive integer"
+    source_id="$SOURCE_ID"
+  fi
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local payload body
+  payload="$(jq -cn --arg subject_type "$SUBJECT_TYPE" --argjson subject_id "$SUBJECT_ID" \
+    --arg description "$description" --arg occurred_at "$occurred_at" \
+    --arg source_kind "$source_kind" --argjson source_id "$source_id" \
+    '{subject_type:$subject_type,subject_id:$subject_id,description:$description,occurred_at:$occurred_at,
+      source_kind:(if $source_kind=="" then null else $source_kind end),source_id:$source_id}')"
+  body="$(api_write POST /api/facts "$payload")"
+  emit "$(printf '%s' "$body" | jq -c '.data')"
+}
+
+# local_day_bounds DATE CMD — resolve YYYY-MM-DD to RFC3339 half-open [from, until)
+# in the local timezone. Fail-fast with the calling command name on bad input.
+local_day_bounds() {
+  local date="$1" cmd="$2"
+  [[ "$date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "${cmd} --date must be YYYY-MM-DD"
+  local from until
+  from="$(date -j -f '%Y-%m-%d %H:%M:%S' "$date 00:00:00" +%Y-%m-%dT%H:%M:%S%z 2>/dev/null)" ||
+    fail "${cmd} could not parse --date $date"
+  until="$(date -j -v+1d -f '%Y-%m-%d %H:%M:%S' "$date 00:00:00" +%Y-%m-%dT%H:%M:%S%z 2>/dev/null)" ||
+    fail "${cmd} could not advance --date $date"
+  from="$(printf '%s' "$from" | sed -E 's/([0-9]{2})([0-9]{2})$/\1:\2/')"
+  until="$(printf '%s' "$until" | sed -E 's/([0-9]{2})([0-9]{2})$/\1:\2/')"
+  printf '%s %s' "$from" "$until"
+}
+
+# list-facts reads one subject's recorded facts, newest first. --date narrows to
+# one natural day in local time; the API takes explicit bounds so the day is
+# resolved here rather than assumed by the server.
+cmd_list_facts() {
+  reset_flags
+  LIMIT="20"
+  consume_flags "$@"
+  [[ -n "$SUBJECT_TYPE" ]] || fail "list-facts requires --subject-type"
+  [[ "$SUBJECT_ID" =~ ^[1-9][0-9]*$ ]] || fail "list-facts requires a positive --subject-id"
+  require_limit list-facts "$LIMIT" 100
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local enc_type query
+  enc_type="$(jq -rn --arg s "$SUBJECT_TYPE" '$s|@uri')"
+  query="?subject_type=${enc_type}&subject_id=${SUBJECT_ID}&limit=${LIMIT}"
+  if [[ -n "$DATE" ]]; then
+    local from until
+    read -r from until <<<"$(local_day_bounds "$DATE" list-facts)"
+    query="${query}&from=$(jq -rn --arg s "$from" '$s|@uri')&until=$(jq -rn --arg s "$until" '$s|@uri')"
+  fi
+  local body
+  body="$(api_get "/api/facts${query}")"
+  emit "$(printf '%s' "$body" | jq -c '.data')"
+}
+
+cmd_list_relations() {
+  reset_flags
+  LIMIT="20"
+  consume_flags "$@"
+  [[ -n "$ENTITY_TYPE" ]] || fail "list-relations requires --entity-type"
+  [[ "$ENTITY_ID" =~ ^[1-9][0-9]*$ ]] || fail "list-relations requires positive --entity-id"
+  require_limit list-relations "$LIMIT" 100
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local enc_type body
+  enc_type="$(jq -rn --arg s "$ENTITY_TYPE" '$s|@uri')"
+  body="$(api_get "/api/relation-facts?entity_type=${enc_type}&entity_id=${ENTITY_ID}&page=1&page_size=${LIMIT}")"
+  emit "$(printf '%s' "$body" | jq -c '.data')"
+}
+
+cmd_list_todos() {
+  reset_flags
+  LIMIT="20"
+  consume_flags "$@"
+  require_limit list-todos "$LIMIT" 100
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local query="?page=1&page_size=${LIMIT}"
+  if [[ -n "$STATUS" ]]; then
+    query="${query}&status=$(jq -rn --arg s "$STATUS" '$s|@uri')"
+  fi
+  if [[ -n "$DATE" ]]; then
+    local from until
+    read -r from until <<<"$(local_day_bounds "$DATE" list-todos)"
+    query="${query}&from=$(jq -rn --arg s "$from" '$s|@uri')&until=$(jq -rn --arg s "$until" '$s|@uri')"
+  fi
+  local body
+  body="$(api_get "/api/todos${query}")"
+  emit "$(printf '%s' "$body" | jq -c '.data | {
+    total,page,page_size,
+    items:[.items[] | {id,title,action_type,target,commitment_strength,assigner_open_id,is_leader_assigned,due_at,status,revision,version,first_seen_at,last_evidence_at,group,project}]
+  }')"
+}
+
+cmd_get_todo() {
+  reset_flags
+  consume_flags "$@"
+  [[ "$ID" =~ ^[1-9][0-9]*$ ]] || fail "get-todo requires positive --id"
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local body
+  body="$(api_get "/api/todos/${ID}")"
+  emit "$(printf '%s' "$body" | jq -c '.data')"
+}
+
+cmd_list_tasks() {
+  reset_flags
+  LIMIT="20"
+  consume_flags "$@"
+  require_limit list-tasks "$LIMIT" 100
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local query="?page=1&page_size=${LIMIT}"
+  if [[ -z "$STATUS" ]]; then
+    STATUS="pending,executing,waiting,needs_human,awaiting_approval,done,failed,observing"
+  fi
+  query="${query}&status=$(jq -rn --arg s "$STATUS" '$s|@uri')"
+  if [[ -n "$DATE" ]]; then
+    local from until
+    read -r from until <<<"$(local_day_bounds "$DATE" list-tasks)"
+    query="${query}&from=$(jq -rn --arg s "$from" '$s|@uri')&until=$(jq -rn --arg s "$until" '$s|@uri')"
+  fi
+  local body
+  body="$(api_get "/api/tasks${query}")"
+  emit "$(printf '%s' "$body" | jq -c '.data | {
+    total,page,page_size,
+    items:[.items[] | {id,todo_id,title,action_type,target,status,summary,project_id,source_type,source_id,created_at,last_progress_at,version,updated_at,resolution}]
+  }')"
+}
+
+# get-task merges task detail, recent runs, the event timeline and task-scoped
+# facts into one JSON object — the pieces a summary line omits.
+cmd_get_task() {
+  reset_flags
+  consume_flags "$@"
+  [[ "$ID" =~ ^[1-9][0-9]*$ ]] || fail "get-task requires positive --id"
+  require_limit "get-task --run-limit" "$RUN_LIMIT" 20
+  require_limit "get-task --event-limit" "$EVENT_LIMIT" 100
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local task runs events facts
+  task="$(api_get "/api/tasks/${ID}" | jq -c '.data')"
+  runs="$(api_get "/api/tasks/${ID}/runs" | jq -c --argjson limit "$RUN_LIMIT" --argjson include_output "$INCLUDE_RUN_OUTPUT" --argjson include_prompt "$INCLUDE_PROMPT" '
+    [.data.items[:$limit][]
+      | {id,task_id,action_type,stage,sandbox,status,summary,effects,error_detail,repo_path,started_at,finished_at,duration_ms}
+      + (if $include_output then {output:.output} else {} end)
+      + (if $include_prompt then {prompt:.prompt} else {} end)
+    ]')"
+  events="$(api_get "/api/tasks/${ID}/events" | jq -c --argjson limit "$EVENT_LIMIT" '.data.items[:$limit]')"
+  facts="$(api_get "/api/facts?subject_type=task&subject_id=${ID}&limit=20" | jq -c '.data.items')"
+  emit "$(jq -cn --argjson task "$task" --argjson runs "$runs" --argjson events "$events" --argjson facts "$facts" \
+    '{task:$task,runs:$runs,events:$events,facts:$facts}')"
+}
+
+cmd_list_scheduled_tasks() {
+  reset_flags
+  LIMIT="20"
+  consume_flags "$@"
+  require_limit list-scheduled-tasks "$LIMIT" 100
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local query="?limit=${LIMIT}"
+  if [[ -n "$STATUS" ]]; then
+    local enc
+    enc="$(jq -rn --arg s "$STATUS" '$s|@uri')"
+    query="${query}&status=${enc}"
+  fi
+  local body
+  body="$(api_get "/api/scheduled-tasks${query}")"
+  emit "$(printf '%s' "$body" | jq -c '.data | {
+    items:[.items[] | {id,title,action_type,dispatch_kind,subject_type,subject_id,schedule_type,daily_time,interval_minutes,run_at,next_run_at,enabled,status,last_run_status,last_task_id,last_started_at,last_finished_at,updated_at}]
+  }')"
+}
+
+cmd_get_scheduled_task() {
+  reset_flags
+  consume_flags "$@"
+  [[ "$ID" =~ ^[1-9][0-9]*$ ]] || fail "get-scheduled-task requires positive --id"
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  emit "$(api_get "/api/scheduled-tasks/${ID}" | jq -c '.data')"
+}
+
+cmd_create_task() {
+  reset_flags
+  consume_flags "$@"
+  [[ "${JARVIS_AGENT_STAGE:-}" == "proactive" ]] || fail "create-task is only available to the proactive Agent"
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local payload body
+  if [[ "$PAYLOAD" == "-" ]]; then
+    payload="$(cat)"
+  else
+    payload="$PAYLOAD"
+  fi
+  printf '%s' "$payload" | jq -e 'type == "object"' >/dev/null 2>&1 || fail "create-task payload must be a JSON object"
+  payload="$(printf '%s' "$payload" | jq -c '. + {source_type:"proactive"}')"
+  body="$(api_write POST /api/tasks "$payload")"
+  emit "$(printf '%s' "$body" | jq -c '.data')"
+}
+
+cmd_start_task() {
+  reset_flags
+  consume_flags "$@"
+  [[ "${JARVIS_AGENT_STAGE:-}" == "proactive" ]] || fail "start-task is only available to the proactive Agent"
+  [[ "$ID" =~ ^[1-9][0-9]*$ ]] || fail "start-task requires positive --id"
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local body
+  body="$(api_write POST "/api/tasks/${ID}/execute" '{}')"
+  emit "$(printf '%s' "$body" | jq -c '.data')"
+}
+
+cmd_update_task() {
+  reset_flags
+  consume_flags "$@"
+  [[ "${JARVIS_AGENT_STAGE:-}" == "proactive" ]] || fail "update-task is only available to the proactive Agent"
+  [[ "$ID" =~ ^[1-9][0-9]*$ ]] || fail "update-task requires positive --id"
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local payload body
+  if [[ "$PAYLOAD" == "-" ]]; then
+    payload="$(cat)"
+  else
+    payload="$PAYLOAD"
+  fi
+  printf '%s' "$payload" | jq -e '
+    type == "object" and
+    (.expected_version | type == "number" and . >= 0 and floor == .) and
+    (.reason | type == "string" and length > 0) and
+    (has("title") or has("target") or has("summary") or has("instruction")) and
+    ((has("title") | not) or (.title | type == "string" and length > 0)) and
+    ((has("target") | not) or (.target | type == "string")) and
+    ((has("summary") | not) or (.summary | type == "string" and length > 0)) and
+    ((has("instruction") | not) or (.instruction | type == "string" and length > 0))
+  ' >/dev/null 2>&1 || fail "update-task payload requires expected_version, reason and at least one mutable Task field"
+  body="$(api_write PATCH "/api/tasks/${ID}" "$payload")"
+  emit "$(printf '%s' "$body" | jq -c '.data')"
+}
+
+cmd_close_task() {
+  reset_flags
+  consume_flags "$@"
+  [[ "${JARVIS_AGENT_STAGE:-}" == "proactive" ]] || fail "close-task is only available to the proactive Agent"
+  [[ "$ID" =~ ^[1-9][0-9]*$ ]] || fail "close-task requires positive --id"
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local payload body
+  if [[ "$PAYLOAD" == "-" ]]; then
+    payload="$(cat)"
+  else
+    payload="$PAYLOAD"
+  fi
+  printf '%s' "$payload" | jq -e '
+    type == "object" and
+    (.expected_version | type == "number" and . >= 0 and floor == .) and
+    (.result | type == "object" and (.summary | type == "string" and length > 0))
+  ' >/dev/null 2>&1 || fail "close-task payload requires non-negative expected_version and non-empty result.summary"
+  body="$(api_write POST "/api/tasks/${ID}/close" "$payload")"
+  emit "$(printf '%s' "$body" | jq -c '.data')"
+}
+
+cmd_create_scheduled_task() {
+  reset_flags
+  consume_flags "$@"
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local payload body
+  if [[ "$PAYLOAD" == "-" ]]; then
+    payload="$(cat)"
+  else
+    payload="$PAYLOAD"
+  fi
+  printf '%s' "$payload" | jq -e 'type == "object"' >/dev/null 2>&1 || fail "create-scheduled-task payload must be a JSON object"
+  body="$(api_write POST /api/scheduled-tasks "$payload")"
+  emit "$(printf '%s' "$body" | jq -c '.data')"
+}
+
+cmd_update_scheduled_task() {
+  reset_flags
+  consume_flags "$@"
+  [[ "$ID" =~ ^[1-9][0-9]*$ ]] || fail "update-scheduled-task requires positive --id"
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local payload body
+  if [[ "$PAYLOAD" == "-" ]]; then
+    payload="$(cat)"
+  else
+    payload="$PAYLOAD"
+  fi
+  printf '%s' "$payload" | jq -e 'type == "object"' >/dev/null 2>&1 || fail "update-scheduled-task payload must be a JSON object"
+  body="$(api_write PUT "/api/scheduled-tasks/${ID}" "$payload")"
+  emit "$(printf '%s' "$body" | jq -c '.data')"
+}
+
+cmd_trigger_scheduled_task() {
+  reset_flags
+  consume_flags "$@"
+  [[ "$ID" =~ ^[1-9][0-9]*$ ]] || fail "trigger-scheduled-task requires positive --id"
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local body
+  body="$(api_write POST "/api/scheduled-tasks/${ID}/trigger" '{}')"
+  emit "$(printf '%s' "$body" | jq -c '.data')"
+}
+
+# set-todo-status parks a clue or hands it back to Task materialization. The server
+# owns which transitions are legal; this only names the caller and the reason.
+cmd_set_todo_status() {
+  reset_flags
+  consume_flags "$@"
+  [[ "$ID" =~ ^[1-9][0-9]*$ ]] || fail "set-todo-status requires positive --id"
+  case "$STATUS" in
+    observing|extracted) ;;
+    *) fail "set-todo-status --status must be observing or extracted" ;;
+  esac
+  local reason
+  if [[ "$REASON" == "-" ]]; then
+    reason="$(cat)"
+  else
+    reason="$REASON"
+  fi
+  [[ -n "${reason//[[:space:]]/}" ]] || fail "set-todo-status reason is empty"
+  local actor="$ACTOR"
+  if [[ -z "$actor" ]]; then
+    actor="${JARVIS_AGENT_STAGE:-}"
+  fi
+  [[ -n "${actor//[[:space:]]/}" ]] || fail "set-todo-status requires --actor outside a Jarvis Agent process"
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local payload body
+  payload="$(jq -cn --arg status "$STATUS" --arg actor "$actor" --arg reason "$reason" \
+    '{status:$status,actor:$actor,reason:$reason}')"
+  body="$(api_write PATCH "/api/todos/${ID}/status" "$payload")"
+  emit "$(printf '%s' "$body" | jq -c '.data')"
+}
+
+cmd_yield_until() {
+  reset_flags
+  consume_flags "$@"
+  [[ "${JARVIS_TASK_ID:-}" =~ ^[1-9][0-9]*$ ]] || fail "yield-until requires JARVIS_TASK_ID from the Task runner"
+  [[ -n "$AT" ]] || fail "yield-until requires --at"
+  local reason
+  if [[ "$REASON" == "-" ]]; then
+    reason="$(cat)"
+  else
+    reason="$REASON"
+  fi
+  [[ -n "${reason//[[:space:]]/}" ]] || fail "yield-until reason is empty"
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local payload body
+  payload="$(jq -cn --argjson task_id "$JARVIS_TASK_ID" --arg run_at "$AT" --arg reason "$reason" \
+    '{task_id:$task_id,run_at:$run_at,reason:$reason}')"
+  body="$(api_write POST /api/scheduled-tasks/yield "$payload")"
+  emit "$(printf '%s' "$body" | jq -c '.data')"
+}
+
+cmd_delete_scheduled_task() {
+  reset_flags
+  consume_flags "$@"
+  [[ "$ID" =~ ^[1-9][0-9]*$ ]] || fail "delete-scheduled-task requires positive --id"
+  API_BASE="$(resolve_api_base "$CONFIG_PATH")"
+  local body
+  body="$(api_write DELETE "/api/scheduled-tasks/${ID}" '{}')"
+  emit "$(printf '%s' "$body" | jq -c '.data')"
+}
+
+# --- main -------------------------------------------------------------------
+
+[[ $# -ge 1 ]] || usage_error
+SUBCOMMAND="$1"
+shift
+
+if [[ "$SUBCOMMAND" == "--help" || "$SUBCOMMAND" == "-h" ]]; then
+  print_usage
+  exit 0
+fi
+if [[ $# -eq 1 && ( "$1" == "--help" || "$1" == "-h" ) ]]; then
+  if ! print_subcommand_help "$SUBCOMMAND"; then
+    fail "unknown subcommand \"${SUBCOMMAND}\""
+  fi
+  exit 0
+fi
+
+case "$SUBCOMMAND" in
+  list-projects)  cmd_list_projects "$@" ;;
+  get-project)    cmd_get_project "$@" ;;
+  create-project) cmd_payload_create create-project POST /api/projects "$@" ;;
+  update-project) cmd_payload_by_id update-project PUT /api/projects "$@" ;;
+  archive-project) cmd_delete_by_id archive-project /api/projects "$@" ;;
+  list-key-matters) cmd_list_key_matters "$@" ;;
+  get-key-matter) cmd_get_key_matter "$@" ;;
+  create-key-matter) cmd_payload_create create-key-matter POST /api/key-matters "$@" ;;
+  update-key-matter) cmd_payload_by_id update-key-matter PUT /api/key-matters "$@" ;;
+  touch-key-matter) cmd_touch_by_id touch-key-matter /api/key-matters "$@" ;;
+  close-key-matter) cmd_delete_by_id close-key-matter /api/key-matters "$@" ;;
+  list-groups)    cmd_list_groups "$@" ;;
+  get-group)      cmd_get_group "$@" ;;
+  get-context)    cmd_get_context "$@" ;;
+  update-group)   cmd_payload_by_id update-group PUT /api/groups "$@" ;;
+  get-principal)  cmd_get_principal "$@" ;;
+  update-principal) cmd_payload_create update-principal PUT /api/profile "$@" ;;
+  list-persons)   cmd_list_persons "$@" ;;
+  get-person)     cmd_get_person "$@" ;;
+  create-person)  cmd_payload_create create-person POST /api/persons "$@" ;;
+  update-person)  cmd_payload_by_id update-person PUT /api/persons "$@" ;;
+  delete-person)  cmd_delete_by_id delete-person /api/persons "$@" ;;
+  query-resources)      cmd_query_resources "$@" ;;
+  get-resource)         cmd_get_resource "$@" ;;
+  create-resource)      cmd_payload_create create-resource POST /api/resources "$@" ;;
+  update-resource)      cmd_payload_by_id update-resource PUT /api/resources "$@" ;;
+  touch-resource)       cmd_touch_by_id touch-resource /api/resources "$@" ;;
+  delete-resource)      cmd_delete_by_id delete-resource /api/resources "$@" ;;
+  query-messages)       cmd_query_messages "$@" ;;
+  query-captured-resources) cmd_query_captured_resources "$@" ;;
+  get-captured-resource) cmd_get_captured_resource "$@" ;;
+  get-shared-memory)    cmd_get_shared_memory "$@" ;;
+  list-skills)          cmd_list_skills "$@" ;;
+  get-skill)            cmd_get_skill "$@" ;;
+  append-shared-memory) cmd_append_shared_memory "$@" ;;
+  append-clue)          cmd_append_clue "$@" ;;
+  append-fact)          cmd_append_fact "$@" ;;
+  list-facts)           cmd_list_facts "$@" ;;
+  list-relations)       cmd_list_relations "$@" ;;
+  create-relation)      cmd_payload_create create-relation POST /api/relation-facts "$@" ;;
+  update-relation)      cmd_payload_by_id update-relation PUT /api/relation-facts "$@" ;;
+  delete-relation)      cmd_delete_by_id delete-relation /api/relation-facts "$@" ;;
+  list-todos)           cmd_list_todos "$@" ;;
+  get-todo)             cmd_get_todo "$@" ;;
+  list-tasks)           cmd_list_tasks "$@" ;;
+  get-task)             cmd_get_task "$@" ;;
+  create-task)          cmd_create_task "$@" ;;
+  start-task)           cmd_start_task "$@" ;;
+  update-task)          cmd_update_task "$@" ;;
+  close-task)           cmd_close_task "$@" ;;
+  list-scheduled-tasks) cmd_list_scheduled_tasks "$@" ;;
+  get-scheduled-task)   cmd_get_scheduled_task "$@" ;;
+  create-scheduled-task) cmd_create_scheduled_task "$@" ;;
+  update-scheduled-task) cmd_update_scheduled_task "$@" ;;
+  trigger-scheduled-task) cmd_trigger_scheduled_task "$@" ;;
+  set-todo-status)      cmd_set_todo_status "$@" ;;
+  yield-until)          cmd_yield_until "$@" ;;
+  delete-scheduled-task) cmd_delete_scheduled_task "$@" ;;
+  *)
+    fail "unknown subcommand \"${SUBCOMMAND}\"; run jarvis-tools --help"
+    ;;
+esac

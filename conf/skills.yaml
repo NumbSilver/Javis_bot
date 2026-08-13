@@ -1,0 +1,37 @@
+skills:
+    - name: feishu-group-daily-summary
+      enabled: true
+      stages:
+        - execute
+    - name: feishu-meeting-clue
+      enabled: true
+      stages:
+        - execute
+    - name: feishu-meeting-prep-clue
+      enabled: true
+      stages:
+        - execute
+    - name: feishu-send-message
+      enabled: true
+      stages:
+        - execute
+    - name: bootstrap-jarvis-world-model
+      enabled: false # 独立仓库 Skill；不注入 M3/M5 runtime catalog
+      stages:
+        - execute
+    - name: install-jarvis
+      enabled: false # 独立仓库 Skill；只供用户的 Agent 首次安装，不注入 M3/M5
+      stages:
+        - execute
+    - name: summarize-morning-brief
+      enabled: true
+      stages:
+        - execute
+    - name: summarize-person-day
+      enabled: true
+      stages:
+        - execute
+    - name: summarize-person-week
+      enabled: true
+      stages:
+        - execute

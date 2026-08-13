@@ -1,0 +1,98 @@
+#!/bin/zsh
+set -euo pipefail
+
+script_dir=${0:A:h}
+source_runtime="$script_dir/runtime"
+install_root="${JARVIS_INSTALL_ROOT:-$HOME/Library/Application Support/Jarvis}"
+runtime="$install_root/runtime"
+installer="$runtime/scripts/jarvis-install"
+config="$runtime/conf/config.yaml"
+
+export PATH="$runtime/toolchain/node/bin:$runtime/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin"
+export LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1
+export LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1
+
+fail() {
+  print -u2 "Jarvis 安装器：$*"
+  exit 1
+}
+
+require_runtime() {
+  [[ -x $installer ]] || fail "尚未准备运行目录，请先执行“准备运行环境”"
+}
+
+prepare_runtime() {
+  [[ -d $source_runtime ]] || fail "应用资源缺少 runtime 目录"
+  mkdir -p "$install_root"
+  if [[ -d $runtime ]]; then
+    # Mutable paths are absent from the packaged payload, so ditto updates the
+    # application files without deleting local data or runtime configuration.
+    ditto "$source_runtime" "$runtime"
+  else
+    temporary="$install_root/runtime.next"
+    rm -rf "$temporary"
+    ditto "$source_runtime" "$temporary"
+    mv "$temporary" "$runtime"
+  fi
+  mkdir -p "$runtime/var/log" "$runtime/data" "$runtime/runs"
+  chmod 0600 "$config"
+  print -r -- "$runtime"
+}
+
+run_installer() {
+  require_runtime
+  "$installer" "$1" --config "$config" --prebuilt
+}
+
+case "${1:-}" in
+  prepare)
+    prepare_runtime
+    ;;
+  doctor)
+    run_installer doctor
+    ;;
+  install-lark-cli)
+    run_installer install-lark-cli
+    ;;
+  install-traex)
+    run_installer install-traex
+    ;;
+  traex-status)
+    require_runtime
+    traex login status
+    ;;
+  configure)
+    (( $# == 4 )) || fail "configure 需要 OPEN_ID、PROFILE 和 GIT_AUTHOR"
+    require_runtime
+    "$installer" configure-identity \
+      --config "$config" --open-id "$2" --profile "$3" --git-author "$4"
+    "$installer" bind-cc --config "$config" --profile "$3"
+    ;;
+  install-services)
+    if launchctl print "gui/$UID/com.cc-connect.service" >/dev/null 2>&1; then
+      "$runtime/bin/cc-connect-jarvis" daemon restart --config "$HOME/.cc-connect/config.toml"
+    else
+      "$runtime/bin/cc-connect-jarvis" daemon install --config "$HOME/.cc-connect/config.toml"
+    fi
+    run_installer install-qdrant
+    run_installer install-server
+    ;;
+  validate)
+    run_installer validate
+    ;;
+  runtime-path)
+    print -r -- "$runtime"
+    ;;
+  open)
+    open http://127.0.0.1:18800/
+    ;;
+  *)
+    cat >&2 <<'EOF'
+usage: jarvis-mvp <prepare|doctor|install-lark-cli|install-traex|traex-status|configure|install-services|validate|runtime-path|open>
+
+configure reads the Feishu App Secret from stdin:
+  printf '%s' "$APP_SECRET" | jarvis-mvp configure OPEN_ID PROFILE GIT_AUTHOR
+EOF
+    exit 2
+    ;;
+esac
