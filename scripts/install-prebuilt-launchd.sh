@@ -23,11 +23,16 @@ done
 mkdir -p "$repo_dir/var/log"
 chmod 0755 "$server_bin" "$config_bin"
 
-# The distributed binary is signed as part of the app bundle. Re-sign the
-# installed copy with the stable per-user identity so macOS TCC grants survive
-# application updates.
-"$script_dir/sign-jarvis-server.sh" "$server_bin"
-"$script_dir/verify-server-signature.sh" "$server_bin"
+# Preserve the build machine's package signature. A distributed binary must
+# never require the destination user to own or authorize a signing private key.
+signature_info=$(codesign -dv --verbose=4 "$server_bin" 2>&1)
+packaged_authority=$(printf '%s\n' "$signature_info" | sed -n 's/^Authority=//p' | head -1)
+if [[ -z $packaged_authority ]]; then
+  print -u2 "packaged jarvis-server has no signing authority"
+  exit 1
+fi
+JARVIS_CODESIGN_IDENTITY="$packaged_authority" \
+  "$script_dir/verify-server-signature.sh" "$server_bin"
 
 agent_plist=$("$script_dir/render-launchd-plist.sh" "$label")
 if launchctl print "$service_target" >/dev/null 2>&1; then

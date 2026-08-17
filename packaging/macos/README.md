@@ -61,6 +61,10 @@ JARVIS_NOTARY_PROFILE=jarvis-notary \
 权限为 `0600` 的 runtime overlay。Ark 模型身份遵循仓库当前
 `internal/ark/config.go` 的单一真源，不由 DMG 向导重复配置。
 
+Jarvis 可执行文件由发布构建机签名。目标机器安装时只验证并保留该签名，不生成、
+导入或使用代码签名私钥，因此普通 DMG 用户不需要批准 `codesign` 访问登录钥匙串。
+`Jarvis Local` 私钥只属于源码开发者的本机重建路径。
+
 ## 升级边界
 
 MVP 的 `prepare` 使用 `ditto` 更新应用文件。发布 payload 不包含

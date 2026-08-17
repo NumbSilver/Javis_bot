@@ -174,6 +174,30 @@ func TestJarvisInstallGatesServerStartOnDependencyValidation(t *testing.T) {
 	}
 }
 
+func TestPrebuiltInstallPreservesPackagedSignature(t *testing.T) {
+	scriptPath, err := filepath.Abs(filepath.Join("..", "..", "scripts", "install-prebuilt-launchd.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(content)
+	for _, want := range []string{
+		`codesign -dv --verbose=4 "$server_bin"`,
+		`packaged_authority=`,
+		`"$script_dir/verify-server-signature.sh" "$server_bin"`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("prebuilt install must verify packaged signing authority; missing %q", want)
+		}
+	}
+	if strings.Contains(script, "sign-jarvis-server.sh") {
+		t.Fatal("prebuilt install must not re-sign on the destination machine")
+	}
+}
+
 func TestJarvisInstallConfiguresIdentityThroughMachineBoundary(t *testing.T) {
 	binDir := t.TempDir()
 	writeExecutable(t, filepath.Join(binDir, "go"), `#!/bin/sh

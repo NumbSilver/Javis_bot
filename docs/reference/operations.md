@@ -69,6 +69,15 @@ launchctl bootstrap "gui/$uid" "$plist"
 
 ## 日常重建
 
+首次源码构建前执行一次钥匙串授权。命令只更新 `Jarvis Local` 私钥的
+`codesign` 访问控制，密码不会写入文件：
+
+```bash
+./scripts/ensure-codesign-identity.sh --authorize
+```
+
+后续重建不再需要输入密码：
+
 ```bash
 ./scripts/rebuild-server.sh
 ```

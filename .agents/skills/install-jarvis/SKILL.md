@@ -13,7 +13,8 @@ description: 在新的 macOS 机器或 Jarvis checkout 中完成整个项目安�
 `~/Library/Application Support/Jarvis/runtime`。向导调用 `scripts/jarvis-install`
 时增加 `--prebuilt`，使用打包时生成的 Jarvis、CC Connect 和 Web 制品，不要求目标
 机器安装 Go、CGO 或前端构建工具；源码 checkout 不使用该 flag。两种分发方式共享
-同一份安装清单、身份绑定、服务归属和验收语义。
+同一份安装清单、身份绑定、服务归属和验收语义。预构建安装保留并验证发布构建机
+签名，不在目标机器生成私钥或重新签名，也不要求用户批准 `codesign` 访问钥匙串。
 
 先完整读取 [installation-boundaries.md](references/installation-boundaries.md)、[feishu-capability-audit.md](references/feishu-capability-audit.md) 和 [cc-connect-binding.md](references/cc-connect-binding.md)。
 

@@ -194,6 +194,9 @@ go run ./cmd/jarvis-server -config conf/config.yaml -extract-once
 # 再完成监听群新消息和绑定 Bot 对话的真实端到端验收，最后读回总状态
 ./scripts/jarvis-install status --run-dir <run_dir>
 
+# 首次源码构建前授权一次；密码只用于更新 Jarvis Local 私钥 ACL
+./scripts/ensure-codesign-identity.sh --authorize
+
 # 日常后端修改后重建、稳定签名并重启
 ./scripts/rebuild-server.sh
 
