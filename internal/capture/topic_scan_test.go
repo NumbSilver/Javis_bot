@@ -80,8 +80,8 @@ func TestTopicScanCapturesNewRepliesUnderOldRoot(t *testing.T) {
 	if len(observer.results) != 1 || observer.results[0].InsertedCount != 3 {
 		t.Fatalf("scan observer results = %#v", observer.results)
 	}
-	if len(runner.calls) != 2 {
-		t.Fatalf("topic search calls = %d, want 2", len(runner.calls))
+	if len(runner.calls) != 3 {
+		t.Fatalf("topic capture calls = %d, want 3", len(runner.calls))
 	}
 	firstArgs := strings.Join(runner.calls[0], " ")
 	for _, required := range []string{
@@ -101,6 +101,9 @@ func TestTopicScanCapturesNewRepliesUnderOldRoot(t *testing.T) {
 	}
 	if got := argValue(runner.calls[1], "--page-token"); got != "page-2" {
 		t.Fatalf("second search page token = %q, want page-2", got)
+	}
+	if !strings.Contains(strings.Join(runner.calls[2], " "), "+chat-messages-list") {
+		t.Fatalf("third capture call = %q, want chat message list", strings.Join(runner.calls[2], " "))
 	}
 
 	// The overlap intentionally returns the same messages again. message_id
@@ -158,8 +161,8 @@ func TestRegularGroupScanCapturesNewReplyUnderOldRoot(t *testing.T) {
 	if len(observer.results) != 1 || observer.results[0].InsertedCount != 1 {
 		t.Fatalf("scan observer results = %#v, want one inserted message", observer.results)
 	}
-	if len(runner.calls) != 1 {
-		t.Fatalf("group search calls = %d, want 1", len(runner.calls))
+	if len(runner.calls) != 2 {
+		t.Fatalf("group capture calls = %d, want 2", len(runner.calls))
 	}
 	firstArgs := strings.Join(runner.calls[0], " ")
 	for _, required := range []string{
@@ -171,6 +174,9 @@ func TestRegularGroupScanCapturesNewReplyUnderOldRoot(t *testing.T) {
 		if !strings.Contains(firstArgs, required) {
 			t.Errorf("group search args %q do not contain %q", firstArgs, required)
 		}
+	}
+	if !strings.Contains(strings.Join(runner.calls[1], " "), "+chat-messages-list") {
+		t.Fatalf("second capture call = %q, want chat message list", strings.Join(runner.calls[1], " "))
 	}
 
 	// The overlap returns the same reply again; message_id idempotency must keep
@@ -184,6 +190,108 @@ func TestRegularGroupScanCapturesNewReplyUnderOldRoot(t *testing.T) {
 	}
 	if count != 1 || len(observer.results) != 1 {
 		t.Fatalf("overlap count=%d observer_results=%d, want 1 and 1", count, len(observer.results))
+	}
+}
+
+func TestRegularGroupScanAddsSystemEventsFromMessageList(t *testing.T) {
+	location := mustShanghai(t)
+	windowStart := time.Date(2026, 8, 17, 17, 30, 0, 0, location)
+	now := time.Date(2026, 8, 17, 17, 45, 0, 0, location)
+	db := newCaptureTestDB(t)
+	createDiscoveredGroup(t, db, "oc_group_system", "group", true, windowStart)
+
+	duplicate := topicMessage("om_text", "", "普通消息", "2026-08-17 17:35")
+	systemEvent := CLIMessage{
+		ChatID:      "oc_group_system",
+		Content:     "刘宁加入群聊",
+		CreateTime:  "2026-08-17 17:40",
+		MessageID:   "om_system",
+		MessageType: systemMessageType,
+	}
+	runner := &topicSearchFixture{
+		pages: map[string]topicSearchPage{
+			"": {messages: []CLIMessage{duplicate, systemEvent}},
+		},
+		listPages: map[string]topicSearchPage{
+			"": {messages: []CLIMessage{duplicate, systemEvent}},
+		},
+	}
+	service := newPrincipalActivityService(t, db, runner, location)
+	service.now = func() time.Time { return now }
+
+	if err := service.ScanChat(context.Background(), "oc_group_system"); err != nil {
+		t.Fatalf("ScanChat() error = %v", err)
+	}
+
+	var messages []domain.Message
+	if err := db.Where("chat_id = ?", "oc_group_system").Order("create_time ASC, message_id ASC").Find(&messages).Error; err != nil {
+		t.Fatalf("list stored group messages: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("stored message count = %d, want 2", len(messages))
+	}
+	if messages[0].MessageID != "om_text" || messages[1].MessageID != "om_system" {
+		t.Fatalf("stored message IDs = %#v, want text then system", []string{messages[0].MessageID, messages[1].MessageID})
+	}
+	if messages[1].SenderOpenID != systemSenderOpenID || messages[1].SenderType != systemMessageType {
+		t.Fatalf("system sender = (%q, %q), want (%q, %q)", messages[1].SenderOpenID, messages[1].SenderType, systemSenderOpenID, systemMessageType)
+	}
+	var scan domain.ScanRecord
+	if err := db.Where("chat_id = ?", "oc_group_system").Order("id DESC").First(&scan).Error; err != nil {
+		t.Fatalf("load group scan record: %v", err)
+	}
+	if scan.FetchedCount != 2 || scan.InsertedCount != 2 || scan.PageCount != 2 {
+		t.Fatalf("group scan record = %#v, want fetched=2 inserted=2 pages=2", scan)
+	}
+}
+
+func TestRegularGroupListFailureDoesNotPersistSearchResults(t *testing.T) {
+	location := mustShanghai(t)
+	windowStart := time.Date(2026, 8, 17, 17, 30, 0, 0, location)
+	db := newCaptureTestDB(t)
+	createDiscoveredGroup(t, db, "oc_group_list_failure", "group", true, windowStart)
+
+	runner := &topicSearchFixture{
+		pages: map[string]topicSearchPage{
+			"": {messages: []CLIMessage{topicMessage("om_uncommitted", "", "普通消息", "2026-08-17 17:35")}},
+		},
+		listPages: map[string]topicSearchPage{
+			"": {
+				messages: []CLIMessage{{
+					ChatID:      "oc_group_list_failure",
+					Content:     "刘宁加入群聊",
+					CreateTime:  "2026-08-17 17:40",
+					MessageID:   "om_uncommitted_system",
+					MessageType: systemMessageType,
+				}},
+				hasMore:   true,
+				pageToken: "list-page-2",
+			},
+		},
+		failCommand:   "+chat-messages-list",
+		failPageToken: "list-page-2",
+		failErr:       errors.New("message list unavailable"),
+	}
+	service := newPrincipalActivityService(t, db, runner, location)
+	service.now = func() time.Time { return windowStart.Add(15 * time.Minute) }
+
+	err := service.ScanChat(context.Background(), "oc_group_list_failure")
+	if err == nil || !strings.Contains(err.Error(), "list group system messages chat_id=oc_group_list_failure page=2") || !strings.Contains(err.Error(), "message list unavailable") {
+		t.Fatalf("ScanChat() error = %v, want second-page list failure", err)
+	}
+	var count int64
+	if err := db.Model(&domain.Message{}).Where("chat_id = ?", "oc_group_list_failure").Count(&count).Error; err != nil {
+		t.Fatalf("count stored group messages: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("stored message count after list failure = %d, want 0", count)
+	}
+	var checkpoint domain.Checkpoint
+	if err := db.First(&checkpoint, "chat_id = ?", "oc_group_list_failure").Error; err != nil {
+		t.Fatalf("load group checkpoint: %v", err)
+	}
+	if checkpoint.HighWaterCreateTime != windowStart.UnixMilli() {
+		t.Fatalf("group high water after list failure = %d, want %d", checkpoint.HighWaterCreateTime, windowStart.UnixMilli())
 	}
 }
 
@@ -272,33 +380,50 @@ type topicSearchPage struct {
 
 type topicSearchFixture struct {
 	pages         map[string]topicSearchPage
+	listPages     map[string]topicSearchPage
+	failCommand   string
 	failPageToken string
 	failErr       error
 	calls         [][]string
 }
 
 func (f *topicSearchFixture) Run(_ context.Context, out any, args ...string) error {
-	if !strings.Contains(strings.Join(args, " "), "+messages-search") {
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "+messages-search") && !strings.Contains(joined, "+chat-messages-list") {
 		return fmt.Errorf("unexpected lark-cli args: %s", strings.Join(args, " "))
 	}
 	f.calls = append(f.calls, append([]string(nil), args...))
 	pageToken := argValue(args, "--page-token")
-	if pageToken == f.failPageToken && f.failErr != nil {
+	if pageToken == f.failPageToken && f.failErr != nil && (f.failCommand == "" || strings.Contains(joined, f.failCommand)) {
 		return f.failErr
 	}
-	page, ok := f.pages[pageToken]
+	pages := f.pages
+	if strings.Contains(joined, "+chat-messages-list") {
+		pages = f.listPages
+		if pages == nil {
+			pages = map[string]topicSearchPage{"": {}}
+		}
+	}
+	page, ok := pages[pageToken]
 	if !ok {
 		return fmt.Errorf("unexpected page token %q", pageToken)
 	}
-	response, ok := out.(*MessageSearchListResponse)
-	if !ok {
+	switch response := out.(type) {
+	case *MessageSearchListResponse:
+		response.OK = true
+		response.Data.Messages = append([]CLIMessage(nil), page.messages...)
+		response.Data.HasMore = page.hasMore
+		response.Data.PageToken = page.pageToken
+		response.Data.Total = len(page.messages)
+	case *MessageListResponse:
+		response.OK = true
+		response.Data.Messages = append([]CLIMessage(nil), page.messages...)
+		response.Data.HasMore = page.hasMore
+		response.Data.PageToken = page.pageToken
+		response.Data.Total = len(page.messages)
+	default:
 		return fmt.Errorf("unexpected response type %T", out)
 	}
-	response.OK = true
-	response.Data.Messages = append([]CLIMessage(nil), page.messages...)
-	response.Data.HasMore = page.hasMore
-	response.Data.PageToken = page.pageToken
-	response.Data.Total = len(page.messages)
 	return nil
 }
 

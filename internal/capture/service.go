@@ -485,7 +485,7 @@ func (s *Service) ScanChat(ctx context.Context, chatID string) (err error) {
 	insertedMessageIDs := make([]string, 0)
 	if isGroupConversation(group.ChatMode) {
 		var messages []CLIMessage
-		messages, record.PageCount, err = s.searchGroupMessages(ctx, chatID, searchWindowStart, s.now())
+		messages, record.PageCount, err = s.collectGroupMessages(ctx, chatID, searchWindowStart, s.now())
 		record.FetchedCount = int32(len(messages))
 		if err != nil {
 			return err
@@ -566,6 +566,44 @@ func isGroupConversation(chatMode string) bool {
 	return chatMode == "group" || chatMode == "topic"
 }
 
+// collectGroupMessages combines the two Feishu read paths required for complete
+// group capture. Search finds replies created under old thread roots, while the
+// chat list is the only path that returns group system events.
+func (s *Service) collectGroupMessages(
+	ctx context.Context,
+	chatID string,
+	windowStart int64,
+	windowEnd time.Time,
+) ([]CLIMessage, int32, error) {
+	searched, searchPages, err := s.searchGroupMessages(ctx, chatID, windowStart, windowEnd)
+	if err != nil {
+		return searched, searchPages, err
+	}
+	systemMessages, listPages, err := s.listGroupSystemMessages(ctx, chatID, windowStart, windowEnd)
+	if err != nil {
+		return append(searched, systemMessages...), searchPages + listPages, err
+	}
+
+	messagesByID := make(map[string]CLIMessage, len(searched)+len(systemMessages))
+	for _, message := range append(searched, systemMessages...) {
+		if message.MessageID == "" {
+			return nil, searchPages + listPages, fmt.Errorf("group message chat_id=%s has empty message_id", chatID)
+		}
+		messagesByID[message.MessageID] = message
+	}
+	messages := make([]CLIMessage, 0, len(messagesByID))
+	for _, message := range messagesByID {
+		messages = append(messages, message)
+	}
+	sort.Slice(messages, func(i, j int) bool {
+		if messages[i].CreateTime == messages[j].CreateTime {
+			return messages[i].MessageID < messages[j].MessageID
+		}
+		return messages[i].CreateTime < messages[j].CreateTime
+	})
+	return messages, searchPages + listPages, nil
+}
+
 // searchGroupMessages reads group and topic messages by their own create time.
 // Feishu's chat listing filters thread roots by root create time, including in
 // regular groups, so a new reply under an old root is otherwise invisible after
@@ -634,6 +672,66 @@ func (s *Service) searchGroupMessages(
 		}
 		return messages[i].CreateTime < messages[j].CreateTime
 	})
+	return messages, pageCount, nil
+}
+
+func (s *Service) listGroupSystemMessages(
+	ctx context.Context,
+	chatID string,
+	windowStart int64,
+	windowEnd time.Time,
+) ([]CLIMessage, int32, error) {
+	pageToken := ""
+	seenPageTokens := make(map[string]struct{})
+	messages := make([]CLIMessage, 0)
+	var pageCount int32
+	for {
+		var response MessageListResponse
+		args := []string{
+			"im", "+chat-messages-list", "--as", "user", "--chat-id", chatID,
+			"--start", time.UnixMilli(windowStart).In(s.opts.Location).Format(time.RFC3339),
+			"--end", windowEnd.In(s.opts.Location).Format(time.RFC3339),
+			"--order", "asc", "--page-size", strconv.Itoa(s.opts.PageSize), "--no-reactions",
+		}
+		if pageToken != "" {
+			args = append(args, "--page-token", pageToken)
+		}
+		if err := s.lark.Run(ctx, &response, args...); err != nil {
+			return messages, pageCount, fmt.Errorf(
+				"list group system messages chat_id=%s page=%d: %w",
+				chatID,
+				pageCount+1,
+				err,
+			)
+		}
+		pageCount++
+		for _, message := range flattenMessages(response.Data.Messages) {
+			if message.MessageType == systemMessageType {
+				messages = append(messages, message)
+			}
+		}
+		if !response.Data.HasMore {
+			break
+		}
+		nextPageToken := response.Data.PageToken
+		if nextPageToken == "" {
+			return messages, pageCount, fmt.Errorf(
+				"list group system messages chat_id=%s page=%d has_more=true with empty page_token",
+				chatID,
+				pageCount,
+			)
+		}
+		if _, exists := seenPageTokens[nextPageToken]; exists {
+			return messages, pageCount, fmt.Errorf(
+				"list group system messages chat_id=%s page=%d repeated page_token=%q",
+				chatID,
+				pageCount,
+				nextPageToken,
+			)
+		}
+		seenPageTokens[nextPageToken] = struct{}{}
+		pageToken = nextPageToken
+	}
 	return messages, pageCount, nil
 }
 
