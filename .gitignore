@@ -24,6 +24,7 @@ __pycache__/
 /tmp/
 /minutes/
 /lark-im-resources/
+/log/
 
 # agent 在仓库根产生的临时工作目录
 /.tmp/
@@ -34,6 +35,8 @@ __pycache__/
 .jarvis-task-*
 lark-auth-*.png
 tmp-*.png
+/*auth*.png
+/*qr*.png
 /conf/config.runtime.yaml
 
 # 操作系统 / IDE

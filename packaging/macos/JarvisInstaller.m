@@ -304,8 +304,12 @@
             [standardInput.fileHandleForWriting writeData:[input dataUsingEncoding:NSUTF8StringEncoding]];
             [standardInput.fileHandleForWriting closeFile];
         }
-        if (launched) [task waitUntilExit];
-        NSData *data = [output.fileHandleForReading readDataToEndOfFile];
+        NSData *data = [NSData data];
+        if (launched) {
+            // Drain output while the task runs so a full pipe cannot block it.
+            data = [output.fileHandleForReading readDataToEndOfFile];
+            [task waitUntilExit];
+        }
         NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"";
         int status = launched ? task.terminationStatus : 127;
         if (!launched) text = error.localizedDescription ?: @"无法启动安装器";
