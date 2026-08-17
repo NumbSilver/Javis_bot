@@ -57,6 +57,34 @@ func TestRepositoryRulesKeepExecuteOnlyCapabilitiesOutOfExtract(t *testing.T) {
 	}
 }
 
+func TestRepositoryRulesRoutePrincipalJarvisCallByStage(t *testing.T) {
+	service, err := NewService(filepath.Join("..", "..", "conf", "rules"))
+	if err != nil {
+		t.Fatalf("NewService(repository rules): %v", err)
+	}
+	extract, err := service.Block(t.Context(), StageExtract)
+	if err != nil {
+		t.Fatalf("Block(extract): %v", err)
+	}
+	execute, err := service.Block(t.Context(), StageExecute)
+	if err != nil {
+		t.Fatalf("Block(execute): %v", err)
+	}
+
+	if !strings.Contains(extract, "这个判断不依赖飞书真实 mention") {
+		t.Fatalf("extract rules are missing plain-text Jarvis call admission:\n%s", extract)
+	}
+	if strings.Contains(extract, "把该 Profile 的 App ID 对应机器人拉入原群") {
+		t.Fatalf("extract rules contain execute-stage bot membership behavior:\n%s", extract)
+	}
+	if !strings.Contains(execute, "把该 Profile 的 App ID 对应机器人拉入原群") {
+		t.Fatalf("execute rules are missing bot membership behavior:\n%s", execute)
+	}
+	if strings.Contains(execute, "写 `status=extracted`") {
+		t.Fatalf("execute rules contain extract-stage admission behavior:\n%s", execute)
+	}
+}
+
 func TestServiceUpdatesOnlyAllowlistedFile(t *testing.T) {
 	service := newTestService(t)
 	updated, err := service.Update(t.Context(), StageExecute, Input{Content: "new execute rule"})
