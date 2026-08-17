@@ -17,7 +17,10 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-const cliTimeLayout = "2006-01-02 15:04"
+const (
+	cliTimeLayout   = "2006-01-02 15:04"
+	inactiveChatAge = 5 * 24 * time.Hour
+)
 
 type runner interface {
 	Run(ctx context.Context, out any, args ...string) error
@@ -357,9 +360,6 @@ func (s *Service) persistDiscoveredChats(chats []CLIChat, openedP2P *int) error 
 				return fmt.Errorf("initialize checkpoint chat_id=%s: %w", chat.ChatID, err)
 			}
 
-			// 自动开启：仅对 TopN 内的内部真人私聊、且当前尚未监听(related_group=0)的行，
-			// 显式置 1（新旧行都生效）。RowsAffected 即“真正新开”数，据此累计 TopN 预算，
-			// 从 0→1 才计数，已监听或手动开启的不会被重复计入或覆盖。
 			if openNow {
 				opened := tx.Model(&domain.Group{}).
 					Where("chat_id = ? AND related_group = ?", chat.ChatID, false).
@@ -368,10 +368,11 @@ func (s *Service) persistDiscoveredChats(chats []CLIChat, openedP2P *int) error 
 					return fmt.Errorf("open internal p2p chat_id=%s: %w", chat.ChatID, opened.Error)
 				}
 				if opened.RowsAffected == 1 {
-					// 抬水位到 now：存量私聊的 checkpoint 停在久远的发现时刻，
-					// 若不抬，下轮 scan 会 asc 回捞历史。只抬落后于 now 的。
+					// 从未扫描过的存量私聊从 now 起步，避免首次纳入时回捞历史；
+					// 曾扫描后因 5 天不活跃而关闭的私聊保留旧水位，重新活跃时
+					// 才能补到关闭期间的新消息。
 					if err := tx.Model(&domain.Checkpoint{}).
-						Where("chat_id = ? AND high_water_create_time < ?", chat.ChatID, nowMS).
+						Where("chat_id = ? AND last_scan_at IS NULL AND high_water_create_time < ?", chat.ChatID, nowMS).
 						Update("high_water_create_time", nowMS).Error; err != nil {
 						return fmt.Errorf("advance scan window chat_id=%s: %w", chat.ChatID, err)
 					}
@@ -459,7 +460,7 @@ func (s *Service) ScanChat(ctx context.Context, chatID string) (err error) {
 	scanType := "scan_" + group.Tier
 	windowStart := checkpoint.HighWaterCreateTime
 	searchWindowStart := windowStart
-	if group.ChatMode == "topic" {
+	if isGroupConversation(group.ChatMode) {
 		searchWindowStart -= s.opts.SearchOverlap.Milliseconds()
 		if searchWindowStart < 0 {
 			searchWindowStart = 0
@@ -482,9 +483,9 @@ func (s *Service) ScanChat(ctx context.Context, chatID string) (err error) {
 	currentHW := windowStart
 	lastMessageID := checkpoint.LastMessageID
 	insertedMessageIDs := make([]string, 0)
-	if group.ChatMode == "topic" {
+	if isGroupConversation(group.ChatMode) {
 		var messages []CLIMessage
-		messages, record.PageCount, err = s.searchTopicMessages(ctx, chatID, searchWindowStart, s.now())
+		messages, record.PageCount, err = s.searchGroupMessages(ctx, chatID, searchWindowStart, s.now())
 		record.FetchedCount = int32(len(messages))
 		if err != nil {
 			return err
@@ -497,7 +498,7 @@ func (s *Service) ScanChat(ctx context.Context, chatID string) (err error) {
 			lastMessageID,
 		)
 		if err != nil {
-			return fmt.Errorf("persist topic messages chat_id=%s: %w", chatID, err)
+			return fmt.Errorf("persist group messages chat_id=%s: %w", chatID, err)
 		}
 		record.InsertedCount = inserted
 	} else {
@@ -544,6 +545,13 @@ func (s *Service) ScanChat(ctx context.Context, chatID string) (err error) {
 		return err
 	}
 	committed = true
+	if currentHW <= s.now().Add(-inactiveChatAge).UnixMilli() {
+		if err = s.db.Model(&domain.Group{}).
+			Where("id = ? AND related_group = ?", group.ID, true).
+			Update("related_group", false).Error; err != nil {
+			return fmt.Errorf("remove inactive chat from monitoring chat_id=%s: %w", chatID, err)
+		}
+	}
 	if record.InsertedCount == 0 || s.observer == nil {
 		return nil
 	}
@@ -554,15 +562,20 @@ func (s *Service) ScanChat(ctx context.Context, chatID string) (err error) {
 	})
 }
 
-// searchTopicMessages reads messages by their own create time. Feishu's chat
-// listing filters topic roots by root create time, so a new reply under an old
-// root is otherwise invisible after the root passes the chat checkpoint.
+func isGroupConversation(chatMode string) bool {
+	return chatMode == "group" || chatMode == "topic"
+}
+
+// searchGroupMessages reads group and topic messages by their own create time.
+// Feishu's chat listing filters thread roots by root create time, including in
+// regular groups, so a new reply under an old root is otherwise invisible after
+// the root passes the chat checkpoint.
 //
 // Search results are not ordered. Fetch every page before persisting anything,
 // then sort deterministically so a failed or partial search cannot advance the
 // checkpoint past an unseen reply. The overlap tolerates search-index delay;
 // message_id remains the idempotency key when old rows are returned again.
-func (s *Service) searchTopicMessages(
+func (s *Service) searchGroupMessages(
 	ctx context.Context,
 	chatID string,
 	searchStart int64,
@@ -585,7 +598,7 @@ func (s *Service) searchTopicMessages(
 		}
 		if err := s.lark.Run(ctx, &response, args...); err != nil {
 			return messages, pageCount, fmt.Errorf(
-				"search topic messages chat_id=%s page=%d: %w",
+				"search group messages chat_id=%s page=%d: %w",
 				chatID,
 				pageCount+1,
 				err,
@@ -599,14 +612,14 @@ func (s *Service) searchTopicMessages(
 		nextPageToken := response.Data.PageToken
 		if nextPageToken == "" {
 			return messages, pageCount, fmt.Errorf(
-				"search topic messages chat_id=%s page=%d has_more=true with empty page_token",
+				"search group messages chat_id=%s page=%d has_more=true with empty page_token",
 				chatID,
 				pageCount,
 			)
 		}
 		if _, exists := seenPageTokens[nextPageToken]; exists {
 			return messages, pageCount, fmt.Errorf(
-				"search topic messages chat_id=%s page=%d repeated page_token=%q",
+				"search group messages chat_id=%s page=%d repeated page_token=%q",
 				chatID,
 				pageCount,
 				nextPageToken,

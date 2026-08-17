@@ -56,41 +56,6 @@ func TestToolCatalogIsSeparateFromSystemPrompt(t *testing.T) {
 	}
 }
 
-// 共享记忆非空时，M3 应把 BEGIN_SHARED_MEMORY block 追加到 system 段（受信任指令区）；
-// 为空时不注入。
-func TestBuildPromptInjectsSharedMemory(t *testing.T) {
-	unit := ConversationUnit{
-		Key: "chat",
-		Messages: []MessageContext{
-			{MessageID: "om_new", Content: "请修改鉴权逻辑", CreateTime: 1_700_000_001_000, IsNew: true, Extractable: true},
-		},
-	}
-	batch := ChatBatch{Group: GroupContext{ID: 1, ChatID: "oc_1", Name: "研发群"}}
-
-	empty, err := BuildPrompt(batch, unit, nil, time.Unix(1_700_000_100, 0), PromptOptions{SystemPrompt: testM3SystemPrompt,
-		PrincipalOpenID: "ou_owner", Location: time.UTC, MaxChars: 20_000,
-	})
-	if err != nil {
-		t.Fatalf("BuildPrompt() error = %v", err)
-	}
-	if strings.Contains(empty.System, "BEGIN_SHARED_MEMORY") {
-		t.Fatalf("empty shared memory must not inject block:\n%s", empty.System)
-	}
-
-	prompt, err := BuildPrompt(batch, unit, nil, time.Unix(1_700_000_100, 0), PromptOptions{SystemPrompt: testM3SystemPrompt,
-		PrincipalOpenID: "ou_owner", Location: time.UTC, MaxChars: 20_000,
-		SharedMemory: "采集死锁的坑：别在事务里调 lark-cli",
-	})
-	if err != nil {
-		t.Fatalf("BuildPrompt() error = %v", err)
-	}
-	for _, want := range []string{"BEGIN_SHARED_MEMORY", "采集死锁的坑：别在事务里调 lark-cli", "可信"} {
-		if !strings.Contains(prompt.System, want) {
-			t.Fatalf("system prompt missing %q:\n%s", want, prompt.System)
-		}
-	}
-}
-
 func TestBuildPromptInjectsSkills(t *testing.T) {
 	unit := ConversationUnit{Key: "chat", Messages: []MessageContext{{
 		MessageID: "om_new", Content: "通知同事", CreateTime: 1_700_000_001_000, IsNew: true, Extractable: true,
@@ -173,14 +138,23 @@ func TestExtractionPromptDefinesTaskAdmissionBoundary(t *testing.T) {
 		t.Fatalf("read M3 system prompt: %v", err)
 	}
 	system := string(raw)
+	// principal 每天都在调这份提示词的措辞，所以这里只锚定两类不该漂的东西：
+	// 模型必须填的机器契约字段，以及两条曾经真的回归过的语义边界。散文表述
+	// 不做断言——之前逐句断言的版本被一次正常的措辞调整弄红过。
 	for _, want := range []string{
-		"任务准入 Agent",
-		"只回答四个问题",
-		"立即停止调查",
-		"准入简报",
-		"为什么与 principal 有关",
+		// 机器契约：status 枚举与 schema 要求的八个字段必须出现在提示词里。
+		"status=extracted",
+		"status=observing",
+		"action_type",
+		"project_hint",
+		"source_message_ids",
+		"source_quote",
+		"payload",
+		// 语义边界一：M3 只做准入，不越界到执行阶段。
 		"不制定执行方案",
-		"程序不解析，会原样带给 M5",
+		// 语义边界二：principal 直接给 Jarvis 的指令必须绕过价值判断。少了这条，
+		// 强模型会把「让 jarvis 说句话」判成测试信息并丢弃。
+		"principal 直接要求 Jarvis",
 	} {
 		if !strings.Contains(system, want) {
 			t.Fatalf("system prompt missing %q", want)

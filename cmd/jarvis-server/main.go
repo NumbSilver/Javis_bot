@@ -206,11 +206,12 @@ func main() {
 		fatalf("initialize fact engine store failed: %v", err)
 	}
 	factExtractor, err := factengine.NewExtractor(factengine.ExtractorOptions{
-		Bin:           cfg.FactEngine.Bin,
-		Model:         cfg.FactEngine.Model,
-		Sandbox:       cfg.FactEngine.Sandbox,
-		WorkspaceRoot: filepath.Dir(filepath.Dir(configPathAbsolute)),
-		Timeout:       time.Duration(cfg.FactEngine.TimeoutSec) * time.Second,
+		Bin:             cfg.FactEngine.Bin,
+		Model:           cfg.FactEngine.Model,
+		ReasoningEffort: cfg.FactEngine.ReasoningEffort,
+		Sandbox:         cfg.FactEngine.Sandbox,
+		WorkspaceRoot:   filepath.Dir(filepath.Dir(configPathAbsolute)),
+		Timeout:         time.Duration(cfg.FactEngine.TimeoutSec) * time.Second,
 	})
 	if err != nil {
 		fatalf("initialize fact engine extractor failed: %v", err)
@@ -525,7 +526,7 @@ func main() {
 			extractionModelName = cfg.Codex.Model
 			agentToolCatalog = true
 		}
-		extractWorker, err = extract.NewWorker(pipelineStore, extractionEngine, progressService, deduplicator, toolBoxBuilder, sharedMemoryService, extract.WorkerOptions{
+		extractWorker, err = extract.NewWorker(pipelineStore, extractionEngine, progressService, deduplicator, toolBoxBuilder, extract.WorkerOptions{
 			Load: extract.LoadOptions{
 				BatchMessages: cfg.Extract.BatchMessages, ContextMessages: cfg.Extract.ContextMessages,
 				ContextWindow: time.Duration(cfg.Extract.ContextWindowMinutes) * time.Minute,

@@ -1,15 +1,15 @@
 package execute
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
-
-	"jarvis/internal/contextsnap"
+	"io"
 	"jarvis/internal/domain"
 	"jarvis/internal/taskcreate"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -24,6 +24,7 @@ type MaterializationResult struct {
 type MaterializationStats struct {
 	Loaded       int
 	Materialized int
+	Failed       int
 }
 
 type Materializer struct {
@@ -47,13 +48,18 @@ func (m *Materializer) MaterializeOnce(ctx context.Context) (MaterializationStat
 		return MaterializationStats{}, fmt.Errorf("load extracted Todos: %w", err)
 	}
 	stats := MaterializationStats{Loaded: len(todos)}
+	// One Todo that cannot be materialized must not hide the rest of the batch:
+	// every failure is reported, but the remaining Todos still get their Task.
+	var errs []error
 	for i := range todos {
 		if _, err := m.MaterializeTodo(ctx, todos[i].ID, todos[i].Version); err != nil {
-			return stats, err
+			stats.Failed++
+			errs = append(errs, fmt.Errorf("materialize todo_id=%d: %w", todos[i].ID, err))
+			continue
 		}
 		stats.Materialized++
 	}
-	return stats, nil
+	return stats, errors.Join(errs...)
 }
 
 func (m *Materializer) MaterializeTodo(ctx context.Context, todoID uint64, expectedVersion int32) (*MaterializationResult, error) {
@@ -80,7 +86,7 @@ func (m *Materializer) MaterializeTodo(ctx context.Context, todoID uint64, expec
 		if todo.Status != "extracted" {
 			return transitionError(todo.ID, todo.Status, "materialized")
 		}
-		background, err := requireContextSnapshot(&todo)
+		background, err := todoExtractionResultAsTaskBackground(&todo)
 		if err != nil {
 			return err
 		}
@@ -147,12 +153,30 @@ func (m *Materializer) MaterializeTodo(ctx context.Context, todoID uint64, expec
 	return &result, nil
 }
 
-func requireContextSnapshot(todo *domain.Todo) (json.RawMessage, error) {
-	raw := []byte(todo.ContextSnapshot)
-	if _, err := contextsnap.Decode(raw); err != nil {
-		return nil, fmt.Errorf("%w: todo_id=%d context_snapshot invalid: %v", ErrInvalidInput, todo.ID, err)
+func todoExtractionResultAsTaskBackground(todo *domain.Todo) (json.RawMessage, error) {
+	raw := []byte(todo.ExtractionResult)
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("%w: todo_id=%d extraction_result missing", ErrInvalidInput, todo.ID)
 	}
-	return json.RawMessage(append([]byte(nil), raw...)), nil
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var object map[string]any
+	if err := decoder.Decode(&object); err != nil {
+		return nil, fmt.Errorf("%w: todo_id=%d extraction_result invalid: %v", ErrInvalidInput, todo.ID, err)
+	}
+	if object == nil {
+		return nil, fmt.Errorf("%w: todo_id=%d extraction_result must be object", ErrInvalidInput, todo.ID)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, fmt.Errorf("%w: todo_id=%d extraction_result has trailing bytes", ErrInvalidInput, todo.ID)
+	}
+	encoded, err := json.Marshal(object)
+	if err != nil {
+		return nil, fmt.Errorf("%w: todo_id=%d extraction_result encode: %v", ErrInvalidInput, todo.ID, err)
+	}
+	return json.RawMessage(encoded), nil
 }
 
 func lockTodo(tx *gorm.DB, todoID uint64, todo *domain.Todo) error {

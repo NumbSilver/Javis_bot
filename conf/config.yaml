@@ -28,12 +28,13 @@ factengine:
   schedule: "@every 15m"
   rollup_schedule: "0 2 * * *"   # 每天本地 02:00 压缩前一自然日的明细事实
   bin: "traex"
-  model: "DeepSeek-V4-Pro"
+  model: "DeepSeek-V4-Flash"
+  reasoning_effort: "medium"     # 兼顾 Flash 速度与 Fact 判断质量
   rollup_model: "DeepSeek-V4-Pro"
   sandbox: "danger-full-access"   # 本地可信环境；抽取时可自跑 jarvis-tools 查已有事实避免重复
   timeout_sec: 1200              # 一次完整世界维护 Agent 会话最多 20 分钟
   batch_limit: 50                # 每个来源参与粗粒度缩批的候选行上限
-  max_material_chars: 100000     # 一次 Agent 会话的粗粒度材料预算；只在完整材料之间缩批
+  max_material_chars: 800000     # 一次 Agent 会话的粗粒度材料预算；只在完整材料之间缩批
   window_gap_minutes: 30         # 超过此间隔视为另一段对话
   window_max_messages: 40        # 单个对话窗口的消息上限
 
@@ -47,8 +48,8 @@ extract:
   engine: "codex"
   codex_sandbox: "danger-full-access"   # 本地可信环境，codex 可读写整机、联网
   codex_network: true                   # 开联网跑 lark-cli/bytedcli 查飞书侧信息
-  codex_reasoning_effort: "medium"      # M3 准入判断使用中等推理档位
-  concurrency: 2                        # 不同 chat_id（单聊/群聊）并发，同一 chat 串行
+  codex_reasoning_effort: "medium"      # M3 准入判断保留中等推理档位
+  concurrency: 5                        # 不同 chat_id（单聊/群聊）并发，同一 chat 串行
   batch_messages: 400
   context_messages: 20
   context_window_minutes: 120
@@ -65,7 +66,7 @@ extract:
   # M3 function-calling 工具循环
   tool_timeout_sec: 10        # 单次工具调用超时（秒）
   history_tool_limit: 20      # query_chat_history 单次最多返回消息数
-  evidence_retry_max: 2       # source_quote 非逐字命中时，最多额外重抽次数（0=不重试）
+  evidence_retry_max: 1       # 引用改写是模型能自己改对的格式错误；给一次纠正机会，不给预算等于把已产出的线索整轮丢弃
 
 # lark-cli 子进程封装（总纲 §4）
 lark_cli:
@@ -85,7 +86,7 @@ capture:
   warm_age_hours: 168
   timezone: "Asia/Shanghai"
   discover_schedule: "@every 6h"
-  scan_schedule: "@every 2m"
+  scan_schedule: "@every 15s"
   # discover 时按 active_time 自动纳入监听的内部真人私聊上限：只开最活跃的前 N 个，
   # 服务号私聊(p2p_target_type=bot)与僵尸老私聊不开。0=不自动开任何私聊。
   auto_related_p2p_top_n: 30
@@ -103,7 +104,7 @@ card_approval:
 codex:
   bin: "traex"
   model: "DeepSeek-V4-Flash"
-  timeout_seconds: 600   # M3 可自跑只读工具补足准入证据；达到准入结论后立即停止
+  timeout_seconds: 180   # 准入仍要留出工具查证和一次证据重跑的余量；90s 会把正常轮次打成 killed
 
 # 主动巡视 Agent：启动 2 分钟后先跑一次，之后每小时读取世界模型、复盘未完成工作。
 # factengine 以持续建模为主；巡视可顺手维护明确变化，外部动作仍创建 Task 交给强 M5。

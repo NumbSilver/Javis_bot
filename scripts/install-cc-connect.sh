@@ -48,6 +48,11 @@ git -C "$source_dir" apply --check "$PATCH_PATH"
 git -C "$source_dir" apply "$PATCH_PATH"
 (
   cd "$source_dir"
+  (
+    cd web
+    npm install --no-audit --no-fund
+    npm run build
+  )
   go test ./platform/feishu >&2
   npm --prefix web install >&2
   npm --prefix web run build >&2

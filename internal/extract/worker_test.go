@@ -193,16 +193,6 @@ func (f *fakeFactReader) ListFacts(_ context.Context, filter progress.FactFilter
 	return f.facts, nil
 }
 
-// fakeSharedMemoryReader 是共享记忆读取的打桩：text 为要注入的文本，err 非空则模拟读表失败。
-type fakeSharedMemoryReader struct {
-	text string
-	err  error
-}
-
-func (f fakeSharedMemoryReader) Text(context.Context) (string, error) {
-	return f.text, f.err
-}
-
 type fakeWorkRuleReader struct{}
 
 func (fakeWorkRuleReader) Block(context.Context, string) (string, error) { return "", nil }
@@ -224,7 +214,7 @@ func TestWorkerPersistsWholeChat(t *testing.T) {
 	model := &fakeModelExtractor{result: &ExtractionResult{Candidates: []Candidate{}}}
 	facts := &fakeFactReader{}
 	toolBox := &fakeToolBoxBuilder{}
-	worker, err := NewWorker(store, model, facts, &fakeCandidateDeduplicator{}, toolBox, fakeSharedMemoryReader{}, validWorkerOptions())
+	worker, err := NewWorker(store, model, facts, &fakeCandidateDeduplicator{}, toolBox, validWorkerOptions())
 	if err != nil {
 		t.Fatalf("NewWorker() error = %v", err)
 	}
@@ -278,7 +268,6 @@ func TestWorkerExtractChatReturnsCommittedTodoRefs(t *testing.T) {
 		&fakeFactReader{},
 		&fakeCandidateDeduplicator{},
 		&fakeToolBoxBuilder{},
-		fakeSharedMemoryReader{},
 		validWorkerOptions(),
 	)
 	if err != nil {
@@ -304,7 +293,6 @@ func TestWorkerExtractChatSkipsChatWithoutPendingMessages(t *testing.T) {
 		&fakeFactReader{},
 		&fakeCandidateDeduplicator{},
 		&fakeToolBoxBuilder{},
-		fakeSharedMemoryReader{},
 		validWorkerOptions(),
 	)
 	if err != nil {
@@ -328,7 +316,7 @@ func TestWorkerDoesNotAdvanceWatermarkAfterModelFailure(t *testing.T) {
 		LastNew: MessageContext{MessageID: "om_1", ChatID: "oc_1", IsNew: true},
 	}}}
 	model := &fakeModelExtractor{err: errors.New("model unavailable")}
-	worker, err := NewWorker(store, model, &fakeFactReader{}, &fakeCandidateDeduplicator{}, &fakeToolBoxBuilder{}, fakeSharedMemoryReader{}, validWorkerOptions())
+	worker, err := NewWorker(store, model, &fakeFactReader{}, &fakeCandidateDeduplicator{}, &fakeToolBoxBuilder{}, validWorkerOptions())
 	if err != nil {
 		t.Fatalf("NewWorker() error = %v", err)
 	}
@@ -357,7 +345,7 @@ func TestWorkerDoesNotPersistAfterSemanticDedupFailure(t *testing.T) {
 	worker, err := NewWorker(
 		store,
 		&fakeModelExtractor{result: &ExtractionResult{Candidates: []Candidate{candidate}}},
-		&fakeFactReader{}, dedup, &fakeToolBoxBuilder{}, fakeSharedMemoryReader{}, validWorkerOptions(),
+		&fakeFactReader{}, dedup, &fakeToolBoxBuilder{}, validWorkerOptions(),
 	)
 	if err != nil {
 		t.Fatalf("NewWorker() error = %v", err)
@@ -395,7 +383,7 @@ func TestWorkerDedupsWithinResolvedProjectScope(t *testing.T) {
 	worker, err := NewWorker(
 		store,
 		&fakeModelExtractor{result: &ExtractionResult{Candidates: []Candidate{candidate}}},
-		&fakeFactReader{}, dedup, &fakeToolBoxBuilder{}, fakeSharedMemoryReader{}, validWorkerOptions(),
+		&fakeFactReader{}, dedup, &fakeToolBoxBuilder{}, validWorkerOptions(),
 	)
 	if err != nil {
 		t.Fatalf("NewWorker() error = %v", err)
@@ -447,7 +435,7 @@ func TestWorkerRetriesOnQuoteMismatchThenSucceeds(t *testing.T) {
 	}}
 	opts := validWorkerOptions()
 	opts.EvidenceRetryMax = 2
-	worker, err := NewWorker(store, model, &fakeFactReader{}, &fakeCandidateDeduplicator{}, &fakeToolBoxBuilder{}, fakeSharedMemoryReader{}, opts)
+	worker, err := NewWorker(store, model, &fakeFactReader{}, &fakeCandidateDeduplicator{}, &fakeToolBoxBuilder{}, opts)
 	if err != nil {
 		t.Fatalf("NewWorker() error = %v", err)
 	}
@@ -486,7 +474,7 @@ func TestWorkerRetriesUnparseableFinalMessage(t *testing.T) {
 	}
 	opts := validWorkerOptions()
 	opts.EvidenceRetryMax = 2
-	worker, err := NewWorker(store, model, &fakeFactReader{}, &fakeCandidateDeduplicator{}, &fakeToolBoxBuilder{}, fakeSharedMemoryReader{}, opts)
+	worker, err := NewWorker(store, model, &fakeFactReader{}, &fakeCandidateDeduplicator{}, &fakeToolBoxBuilder{}, opts)
 	if err != nil {
 		t.Fatalf("NewWorker() error = %v", err)
 	}
@@ -510,7 +498,7 @@ func TestWorkerFailsAfterExhaustingEvidenceRetries(t *testing.T) {
 	model := &fakeModelExtractor{result: &ExtractionResult{Candidates: []Candidate{rewritten}}}
 	opts := validWorkerOptions()
 	opts.EvidenceRetryMax = 2
-	worker, err := NewWorker(store, model, &fakeFactReader{}, &fakeCandidateDeduplicator{}, &fakeToolBoxBuilder{}, fakeSharedMemoryReader{}, opts)
+	worker, err := NewWorker(store, model, &fakeFactReader{}, &fakeCandidateDeduplicator{}, &fakeToolBoxBuilder{}, opts)
 	if err != nil {
 		t.Fatalf("NewWorker() error = %v", err)
 	}
@@ -542,7 +530,7 @@ func TestWorkerHydratesCitedMessageFromOutsideUnit(t *testing.T) {
 	candidate := retryCandidate("当前服务和架构梳理")
 	candidate.SourceMessageIDs = []string{"om_1", "om_bot"}
 	model := &fakeModelExtractor{result: &ExtractionResult{Candidates: []Candidate{candidate}}}
-	worker, err := NewWorker(store, model, &fakeFactReader{}, &fakeCandidateDeduplicator{}, &fakeToolBoxBuilder{}, fakeSharedMemoryReader{}, validWorkerOptions())
+	worker, err := NewWorker(store, model, &fakeFactReader{}, &fakeCandidateDeduplicator{}, &fakeToolBoxBuilder{}, validWorkerOptions())
 	if err != nil {
 		t.Fatalf("NewWorker() error = %v", err)
 	}
@@ -578,7 +566,7 @@ func TestWorkerRetriesOnInventedMessageIDThenSucceeds(t *testing.T) {
 	}}
 	opts := validWorkerOptions()
 	opts.EvidenceRetryMax = 2
-	worker, err := NewWorker(store, model, &fakeFactReader{}, &fakeCandidateDeduplicator{}, &fakeToolBoxBuilder{}, fakeSharedMemoryReader{}, opts)
+	worker, err := NewWorker(store, model, &fakeFactReader{}, &fakeCandidateDeduplicator{}, &fakeToolBoxBuilder{}, opts)
 	if err != nil {
 		t.Fatalf("NewWorker() error = %v", err)
 	}
@@ -626,6 +614,33 @@ func TestValidateCandidateEvidenceIgnoresOpaquePayload(t *testing.T) {
 	}
 	if err := validateCandidateEvidence(unit, &candidate); err != nil {
 		t.Fatalf("validateCandidateEvidence() error = %v, want nil", err)
+	}
+}
+
+// 飞书原文里的中文引号被模型重打成 ASCII 引号时，引用仍然算逐字：这只是同一个
+// 标点的两种写法，不是改写证据。改写、拼接和凭空编造仍必须被挡住。
+func TestValidateCandidateEvidenceFoldsCurlyQuotes(t *testing.T) {
+	unit := ConversationUnit{Key: "chat", Messages: []MessageContext{{
+		MessageID: "om_1", Source: "poll", SenderOpenID: "ou_owner",
+		Content: "jarvis，给我说 “今年赚一个亿”", IsNew: true, Extractable: true,
+	}}}
+	candidate := func(quote string) Candidate {
+		return Candidate{
+			ActionType: "reply_message", Status: "extracted", Title: "回复", Target: "回复一句话",
+			SourceMessageIDs: []string{"om_1"}, SourceQuote: quote, Payload: "principal 直接要求 Jarvis 回复。",
+		}
+	}
+	folded := candidate(`jarvis，给我说 "今年赚一个亿"`)
+	if err := validateCandidateEvidence(unit, &folded); err != nil {
+		t.Fatalf("ASCII 引号版本应通过逐字校验，got error = %v", err)
+	}
+	original := candidate("jarvis，给我说 “今年赚一个亿”")
+	if err := validateCandidateEvidence(unit, &original); err != nil {
+		t.Fatalf("原文引号版本应通过逐字校验，got error = %v", err)
+	}
+	rewritten := candidate("jarvis，给我说今年赚两个亿")
+	if err := validateCandidateEvidence(unit, &rewritten); !errors.Is(err, ErrEvidenceQuoteMismatch) {
+		t.Fatalf("改写后的 quote 必须被挡住，got error = %v", err)
 	}
 }
 
