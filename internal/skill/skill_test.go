@@ -114,6 +114,29 @@ func TestRepositoryFeishuApprovalCardIsOwnedByServer(t *testing.T) {
 	}
 }
 
+func TestRepositoryFeishuMessageSkillEnsuresBotMembershipInOriginalGroup(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", ".agents", "skills", "feishu-send-message", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read repository Feishu message skill: %v", err)
+	}
+	skill := string(content)
+	for _, want := range []string{
+		"必须使用 Task 原始 `chat_id`",
+		"whoami --as user",
+		"im chat.members bots",
+		"schema im.chat.members.create",
+		"--member-id-type app_id",
+		`--data '{"id_list":["<当前 Profile 的 app_id>"]}'`,
+		"im:chat.members:write_only",
+		"pending_approval_id_list",
+		"再次运行 `chat.members bots`",
+	} {
+		if !strings.Contains(skill, want) {
+			t.Fatalf("Feishu message skill missing group membership contract %q:\n%s", want, skill)
+		}
+	}
+}
+
 func TestRepositoryFeishuMessageSkillIsNotExposedToExtract(t *testing.T) {
 	service, err := NewService(
 		filepath.Join("..", "..", ".agents", "skills"),
@@ -287,7 +310,11 @@ func TestJarvisInstallationCompletesDependenciesBeforeStartingMainService(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	combined := string(installSkill) + "\n" + string(boundaries) + "\n" + string(binding) + "\n" + string(worldModelSkill)
+	capabilityAudit, err := os.ReadFile(filepath.Join(installPath, "references", "feishu-capability-audit.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	combined := string(installSkill) + "\n" + string(boundaries) + "\n" + string(binding) + "\n" + string(capabilityAudit) + "\n" + string(worldModelSkill)
 	for _, want := range []string{
 		"本 Skill 是从完整仓库 checkout 到最终可用的安装流程所有者",
 		"仓库与安装运行 → 机器事实 → 全部依赖 → `validate-dependencies`",
@@ -301,6 +328,9 @@ func TestJarvisInstallationCompletesDependenciesBeforeStartingMainService(t *tes
 		"一个飞书 App/Bot 是身份根",
 		"CC Connect 是该 Bot WebSocket 的唯一所有者",
 		"validate-binding",
+		"`im:chat.members:read` 与 `im:chat.members:write_only`",
+		"`Javis，请回复“群聊唤醒已验证”`",
+		"Jarvis Bot 尚未加入",
 		"已有 daemon 指向另一 binary/checkout",
 		"初始化只负责“Jarvis 如何理解这个用户的世界”",
 		"不安装或重启 daemon，也不配置 CC",

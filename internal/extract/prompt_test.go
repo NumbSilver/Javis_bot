@@ -155,6 +155,8 @@ func TestExtractionPromptDefinesTaskAdmissionBoundary(t *testing.T) {
 		// 语义边界二：principal 直接给 Jarvis 的指令必须绕过价值判断。少了这条，
 		// 强模型会把「让 jarvis 说句话」判成测试信息并丢弃。
 		"principal 直接要求 Jarvis",
+		"不依赖飞书真实 mention",
+		"`Javis` 这类明显拼写误差",
 	} {
 		if !strings.Contains(system, want) {
 			t.Fatalf("system prompt missing %q", want)

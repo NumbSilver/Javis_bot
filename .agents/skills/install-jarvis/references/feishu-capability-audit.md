@@ -24,10 +24,12 @@
 | 文档搜索 | `drive +search` 搜索本人创建的 OKR 文档和最近 7 天本人编辑的文档 | 调用成功；零结果不等于缺权限 |
 | 文档正文 | 有候选时对一个当前可读文档运行轻量 `docs +fetch` | 返回文档内容；没有候选时记录未实测，单文档无权属于资源边界，不代表全局 scope 缺失 |
 | 会话与群成员 | `im +chat-list`，再对一个候选群运行 `im +chat-members-list` | user 身份调用成功 |
+| 群聊唤醒成员权限 | 从 `auth status --json --verify` 核对 user scope | 包含 `im:chat.members:read` 与 `im:chat.members:write_only`；这里只确认明确的权限缺口，真实加 Bot 能力必须在最终端到端验收中验证 |
 | 最近消息 | `im +messages-search` 限定最近 7 天 | 调用成功；零结果不等于缺权限 |
 | CC Connect Bot 读取 | 以 bot 身份运行群列表；有候选群时再运行群成员和群消息轻量探针 | API 调用成功；零群表示 Bot 尚无可见群，不伪装成权限失败，留给端到端验收覆盖 |
 
 命令参数、时间窗口和候选选择由 Agent 根据机器现状调整；所有读取显式带本次 `--profile` 和正确的 `--as user|bot`，不要依赖默认 Profile。
+权限列表不能代替写入验收：scope 缺失可直接确认能力未就绪，scope 存在只表示允许尝试。审计阶段不为了测试制造群成员变更；最终安装清单只有在用户选定的原群中真实完成“Bot 不在群 → user 身份添加当前 App ID → 读回 Bot → Bot 回复原消息”后，才能把群聊唤醒描述为可用。
 
 ### 可选组织信息增强
 

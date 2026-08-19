@@ -110,7 +110,7 @@ DMG 运行目录安装主服务时使用：
 
 ## 6. 真实端到端验收并交付
 
-1. 请用户在一个监听群发送一条新消息，等待正常 M2 扫描后用 `query-messages --chat-id ...` 读回。
+1. 选择一个 Principal 已在其中、当前 Jarvis Bot 尚未加入的内部群，请用户发送 `Javis，请回复“群聊唤醒已验证”`。等待正常 M2 扫描后用 `query-messages --chat-id ...` 读回原消息，并核对 M3 创建 Task、M5 使用同一 Profile 的 user 身份把当前 App ID 加入原群、群机器人列表读回成功、Jarvis Bot 回复原消息。没有 Bot 初始缺席的真实群就把该路径标为未验收，不用 scope 或已有 Bot 的群代替。
 2. 请用户通过绑定的 Jarvis Bot 发起一次 CC Connect 对话，确认该 Agent 先读取当前 Jarvis context 后再回复。
 3. 更新清单 F 区和“最终结果”，然后运行：
 

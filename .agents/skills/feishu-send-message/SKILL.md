@@ -61,6 +61,30 @@ lark-cli im +messages-send \
   --as bot
 ```
 
+## 在已有群里发送前确保 Bot 已入群
+
+当 Task 来自 Principal 在群里的直接呼叫时，必须使用 Task 原始 `chat_id`，不要新建替代群。先从 Jarvis 当前 `lark_cli.profile` 读取实际 Profile，并用同一 Profile 查询 App ID：
+
+```bash
+lark-cli --profile "<profile>" whoami --as user
+lark-cli --profile "<profile>" im chat.members bots \
+  --chat-id "<原群 chat_id>" \
+  --as user
+```
+
+如果返回的机器人列表已经包含当前 App ID，直接继续。如果不包含，先读取原生接口 schema，再使用 user 身份把当前 App ID 加入原群：
+
+```bash
+lark-cli schema im.chat.members.create
+lark-cli --profile "<profile>" im chat.members create \
+  --chat-id "<原群 chat_id>" \
+  --member-id-type app_id \
+  --data '{"id_list":["<当前 Profile 的 app_id>"]}' \
+  --as user
+```
+
+操作需要 `im:chat.members:write_only`，读取验证需要 `im:chat.members:read`。调用成功后再次运行 `chat.members bots`，只有读回当前 App ID 才算入群成功。返回 `pending_approval_id_list`、缺少 scope、调用人无群管理权限或 App 不可见时，保留原始结果并报告真正需要 Principal 处理的下一步；不要改建新群、静默改用私聊或声称已经入群。
+
 ## 在群聊里给某个人发消息
 
 在相关消息下面创建话题并 @ 对方：

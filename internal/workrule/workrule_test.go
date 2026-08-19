@@ -57,6 +57,35 @@ func TestRepositoryRulesKeepExecuteOnlyCapabilitiesOutOfExtract(t *testing.T) {
 	}
 }
 
+func TestRepositoryRulesKeepGroupWakeupMembershipAtExecuteStage(t *testing.T) {
+	service, err := NewService(filepath.Join("..", "..", "conf", "rules"))
+	if err != nil {
+		t.Fatalf("NewService(repository rules): %v", err)
+	}
+	extract, err := service.Block(t.Context(), StageExtract)
+	if err != nil {
+		t.Fatalf("Block(extract): %v", err)
+	}
+	execute, err := service.Block(t.Context(), StageExecute)
+	if err != nil {
+		t.Fatalf("Block(execute): %v", err)
+	}
+
+	for _, want := range []string{
+		"Principal 在群里呼叫 Jarvis",
+		"`feishu-send-message` Skill",
+		"使用 user 身份把该 Profile 的 App ID 加入原群",
+		"读回群机器人列表确认成功",
+	} {
+		if !strings.Contains(execute, want) {
+			t.Fatalf("execute rules are missing group wakeup contract %q:\n%s", want, execute)
+		}
+		if strings.Contains(extract, want) {
+			t.Fatalf("extract rules contain execute-stage group membership behavior %q:\n%s", want, extract)
+		}
+	}
+}
+
 func TestServiceUpdatesOnlyAllowlistedFile(t *testing.T) {
 	service := newTestService(t)
 	updated, err := service.Update(t.Context(), StageExecute, Input{Content: "new execute rule"})
